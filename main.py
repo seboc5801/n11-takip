@@ -53,6 +53,15 @@ def update_product_data(url, price, coupons):
     conn.commit()
     conn.close()
 
+def url_to_title(url):
+    try:
+        # URL'den ürün adını otomatik türetir (Örn: roborock-s9-akilli-robot -> Roborock S9 Akilli Robot)
+        part = url.split("/urun/")[1].split("?")[0]
+        name_slug = part.rsplit("-", 1)[0] # Sondaki ID'yi ayıklar
+        return name_slug.replace("-", " ").title()
+    except:
+        return "N11 Ürünü"
+
 def check_product_page(url):
     mobile_url = url.replace("www.n11.com", "m.n11.com")
     price = 0.0
@@ -64,16 +73,12 @@ def check_product_page(url):
     }
     
     try:
-        print(f"Mobil sayfaya istek atılıyor: {mobile_url}")
         response = requests.get(mobile_url, headers=headers, timeout=30)
-        print(f"HTTP Durum Kodu: {response.status_code}")
-        
         if response.status_code != 200:
             return {"price": 0.0, "coupons": []}
             
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # 1. JSON-LD (SEO) Verisi
         for script in soup.find_all('script', type='application/ld+json'):
             try:
                 data = json.loads(script.string)
@@ -83,15 +88,14 @@ def check_product_page(url):
                 elif data.get('@type') == 'Product' and data.get('offers'):
                     offers = data['offers']
                     if isinstance(offers, list) and offers[0].get('price'):
-                        price = float(offers[0]['price'])
+                        price = float(offers[0].get('price'))
                         break
                     elif isinstance(offers, dict) and offers.get('price'):
-                        price = float(offers['price'])
+                        price = float(offers.get('price'))
                         break
             except Exception:
                 pass
 
-        # 2. CSS Seçicileri
         if price == 0.0:
             selectors = ['.newPrice', '.price', '.campaignPrice', '[itemprop="price"]', '.productPrice']
             for selector in selectors:
@@ -108,8 +112,6 @@ def check_product_page(url):
                                 break
                         except:
                             pass
-
-        print(f"Okunan Fiyat: {price}")
     except Exception as e:
         print(f"Hata: {e}")
         
@@ -129,12 +131,10 @@ async def main():
         return
 
     with open("products.json", "r", encoding="utf-8") as f:
-        products = json.load(f)
+        urls = json.load(f)
 
-    for item in products:
-        url = item["url"]
-        title = item.get("title", "Ürün")
-        
+    for url in urls:
+        title = url_to_title(url)
         data = check_product_page(url)
         current_price = data["price"]
         current_coupons = data["coupons"]
