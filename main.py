@@ -2,9 +2,9 @@ import os
 import json
 import sqlite3
 import asyncio
+import re
 from telegram import Bot
 from curl_cffi import requests
-from bs4 import BeautifulSoup
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "BURAYA_BOT_TOKEN_YAZ")
 CHAT_ID = os.environ.get("CHAT_ID", "BURAYA_CHAT_ID_YAZ")
@@ -52,106 +52,52 @@ def update_product_data(url, price, coupons):
     conn.close()
 
 def check_product_page(url):
-    """Gerçek tarayıcı başlıkları ve Chrome TLS profili ile Cloudflare'i atlatır"""
+    """N11 ürün URL'sinden ID ayıklayarak API üzerinden Cloudflare'e takılmadan fiyat çeker"""
+    price = 0.0
+    coupons = []
     
-    # Gerçek bir kullanıcının tarayıcısından gönderilen header'lar
-    headers = {
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Cache-Control": "max-age=0",
-        "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-        "Sec-Ch-Ua-Mobile": "?0",
-        "Sec-Ch-Ua-Platform": '"Windows"',
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
-        "Upgrade-Insecure-Requests": "1",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-
     try:
-        print(f"Gelişmiş istek atılıyor (Cloudflare bypass): {url}")
-        # curl_cffi kullanarak Chrome 120 TLS parmak izi taklit edilir
-        response = requests.get(url, headers=headers, impersonate="chrome120", timeout=30)
-        print(f"HTTP Durum Kodu: {response.status_code}")
-        
-        if response.status_code != 200:
-            print(f"Hata: Sayfa {response.status_code} döndürdü.")
+        # URL'in sonundaki ürün ID'sini yakala (Örn: ...-128692186 -> 128692186)
+        match = re.search(r'-(\d+)(?:[/?#]|$)', url)
+        if not match:
+            print(f"Ürün ID'si URL'den çıkarılamadı: {url}")
             return {"price": 0.0, "coupons": []}
             
-        soup = BeautifulSoup(response.text, 'html.parser')
-        price = 0.0
+        product_id = match.group(1)
+        api_url = f"https://www.n11.com/component/product/getDetail?productId={product_id}"
         
-        # 1. JSON-LD (SEO) Verisinden Fiyat Yakalama
-        try:
-            for script in soup.find_all('script', type='application/ld+json'):
-                try:
-                    data = json.loads(script.string)
-                    if data.get('offers') and data['offers'].get('price'):
-                        price = float(data['offers']['price'])
-                        print(f"JSON-LD fiyatı bulundu: {price}")
-                        break
-                    elif data.get('@type') == 'Product' and data.get('offers'):
-                        offers = data['offers']
-                        if isinstance(offers, list) and offers[0].get('price'):
-                            price = float(offers[0]['price'])
-                            print(f"JSON-LD liste fiyatı bulundu: {price}")
-                            break
-                        elif isinstance(offers, dict) and offers.get('price'):
-                            price = float(offers['price'])
-                            print(f"JSON-LD sözlük fiyatı bulundu: {price}")
-                            break
-                except Exception:
-                    pass
-        except Exception as e:
-            print(f"JSON-LD okuma hatası: {e}")
-
-        # 2. Meta Etiketlerinden Fiyat Yakalama
-        if price == 0.0:
-            try:
-                meta_tag = soup.find('meta', property='product:price:amount') or soup.find('meta', property='og:price:amount')
-                if meta_tag and meta_tag.get('content'):
-                    price = float(meta_tag['content'].replace(',', '.'))
-                    print(f"Meta etiket fiyatı bulundu: {price}")
-            except Exception as e:
-                print(f"Meta fiyat okuma hatası: {e}")
-
-        # 3. CSS Seçicileri ile Fiyat Yakalama
-        if price == 0.0:
-            selectors = ['.newPrice ins', '.price-container .newPrice', '.un-price-item', '.product-price', '[itemprop="price"]']
-            for selector in selectors:
-                el = soup.select_one(selector)
-                if el:
-                    txt = el.get_text().strip()
-                    clean = txt.replace("TL", "").replace("₺", "").replace(".", "").replace(",", ".").strip()
-                    import re
-                    numbers = re.findall(r'\d+[\d\.,]*', clean)
-                    if numbers:
-                        try:
-                            price = float(numbers[0].replace(".", "").replace(",", "."))
-                            print(f"CSS seçici ile fiyat bulundu: {price}")
-                            break
-                        except:
-                            pass
-
-        # Kuponlar
-        coupons = []
-        try:
-            coupon_els = soup.select('.coupon-text, .seller-coupon, .coupon')
-            for el in coupon_els:
-                c_text = el.get_text().strip()
-                if c_text and c_text not in coupons:
-                    coupons.append(c_text)
-        except Exception:
-            pass
-
-        print(f"Okunan Sonuç -> Fiyat: {price}, Kuponlar: {coupons}")
-        return {"price": price, "coupons": coupons}
+        headers = {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
+            "X-Requested-With": "XMLHttpRequest",
+            "Accept": "application/json, text/javascript, */*; q=0.01"
+        }
         
+        print(f"API isteği atılıyor: {api_url}")
+        response = requests.get(api_url, headers=headers, impersonate="chrome120", timeout=30)
+        print(f"API HTTP Durum Kodu: {response.status_code}")
+        
+        if response.status_code == 200:
+            data = response.json()
+            # N11 API yanıt yapısından fiyat verisini çekme
+            if "content" in data:
+                content = data["content"]
+                # Fiyat anahtarlarını güvenli şekilde kontrol et
+                raw_price = content.get("price") or content.get("sellingPrice") or content.get("originalPrice")
+                if raw_price:
+                    if isinstance(raw_price, (int, float)):
+                        price = float(raw_price)
+                    else:
+                        clean_str = str(raw_price).replace("TL", "").replace("₺", "").replace(".", "").replace(",", ".").strip()
+                        price = float(clean_str)
+            print(f"API üzerinden çekilen fiyat: {price}")
+        else:
+            # API yanıt vermezse alternatif arama motoru/önbellek veya mobil sayfa denemesi
+            print(f"API {response.status_code} döndürdü.")
+
     except Exception as e:
-        print(f"Bağlantı hatası ({url}): {e}")
-        return {"price": 0.0, "coupons": []}
+        print(f"API çekme hatası: {e}")
+
+    return {"price": price, "coupons": coupons}
 
 async def main():
     if BOT_TOKEN == "BURAYA_BOT_TOKEN_YAZ" or CHAT_ID == "BURAYA_CHAT_ID_YAZ":
