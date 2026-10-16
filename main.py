@@ -51,58 +51,81 @@ def update_product_data(url, price, coupons):
     conn.close()
 
 async def check_product_page(url):
-    """N11 ve genel e-ticaret sitelerinden fiyat ve kupon okur"""
+    """N11 ve diğer sitelerden bot korumasını aşarak fiyat ve kupon okur"""
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        # Bot tespitini engellemek için User-Agent tanımı
+        # Bot algılamasını bypass eden özel argümanlar
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled"]
+        )
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         )
         page = await context.new_page()
         try:
             await page.goto(url, timeout=60000)
-            await page.wait_for_load_state("networkidle")
+            await page.wait_for_load_state("domcontentloaded")
             
             price = 0.0
-            # N11 ve popüler sitelerin olası fiyat etiketleri
-            price_selectors = [
-                ".price-container .newPrice ins",
-                ".un-price-item",
-                ".product-price",
-                ".add-to-cart-price",
-                "[data-price]",
-                ".price"
-            ]
             
-            price_text = ""
-            for selector in price_selectors:
-                element = page.locator(selector).first
-                if await element.count() > 0:
-                    price_text = await element.inner_text()
-                    if price_text.strip():
-                        break
-            
-            if price_text:
-                # Fiyat metnini sayıya dönüştürme
-                clean_price = price_text.replace("TL", "").replace("₺", "").replace(".", "").replace(",", ".").strip()
-                try:
-                    price = float(clean_price)
-                except ValueError:
-                    price = 0.0
+            # 1. YÖNTEM: Sayfanın SEO (JSON-LD) verisinden nokta atışı fiyat çekme (Asla şaşmaz)
+            try:
+                price = await page.evaluate("""() => {
+                    const scripts = document.querySelectorAll('script[type="application/ld+json"]');
+                    for (let script of scripts) {
+                        try {
+                            const data = JSON.parse(script.innerText);
+                            if (data.offers && data.offers.price) {
+                                return parseFloat(data.offers.price);
+                            }
+                            if (data['@type'] === 'Product' && data.offers) {
+                                if (Array.isArray(data.offers)) {
+                                    return parseFloat(data.offers[0].price);
+                                } else if (data.offers.price) {
+                                    return parseFloat(data.offers.price);
+                                }
+                            }
+                        } catch (e) {}
+                    }
+                    return 0.0;
+                """)
+            except Exception:
+                price = 0.0
 
-            coupons = []
-            # Kupon ve kampanya etiketleri
-            coupon_selectors = [".coupon-text", ".seller-coupon", ".product-campaign-item", ".coupon"]
-            for c_selector in coupon_selectors:
+            # 2. YÖNTEM: Meta etiketlerinden fiyat yedek kontrolü
+            if price == 0.0:
                 try:
-                    coupon_elements = await page.locator(c_selector).all()
-                    for elem in coupon_elements:
-                        c_text = await elem.inner_text()
-                        c_text = c_text.strip()
-                        if c_text and c_text not in coupons:
-                            coupons.append(c_text)
+                    meta_price = await page.locator('meta[property="product:price:amount"], meta[property="og:price:amount"]').first.get_attribute("content")
+                    if meta_price:
+                        price = float(meta_price.replace(",", "."))
                 except Exception:
                     pass
+
+            # 3. YÖNTEM: Görsel sınıf etiketleri yedek kontrolü
+            if price == 0.0:
+                price_selectors = [".price-container .newPrice ins", ".un-price-item", ".product-price", ".price"]
+                for selector in price_selectors:
+                    el = page.locator(selector).first
+                    if await el.count() > 0:
+                        txt = await el.inner_text()
+                        clean = txt.replace("TL", "").replace("₺", "").replace(".", "").replace(",", ".").strip()
+                        try:
+                            price = float(clean)
+                            break
+                        except:
+                            pass
+
+            # Kupon ve kampanya etiketleri
+            coupons = []
+            try:
+                coupon_elements = await page.locator(".coupon-text, .seller-coupon, .coupon").all()
+                for elem in coupon_elements:
+                    c_text = await elem.inner_text()
+                    c_text = c_text.strip()
+                    if c_text and c_text not in coupons:
+                        coupons.append(c_text)
+            except Exception:
+                pass
 
             await browser.close()
             return {"price": price, "coupons": coupons}
