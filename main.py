@@ -52,15 +52,18 @@ def update_product_data(url, price, coupons):
     conn.close()
 
 def check_product_page(url):
-    """Cloudflare engeline takılmadan curl_cffi ile n11 fiyatını çeker"""
+    """N11 mobil sürümü (m.n11.com) üzerinden Cloudflare engelini aşarak fiyat çeker"""
+    # Masaüstü linkini mobil linke çeviriyoruz (m.n11.com 403 engelini aşar)
+    mobile_url = url.replace("www.n11.com", "m.n11.com")
+    
     try:
-        print(f"İstek atılıyor (Cloudflare bypass): {url}")
-        # Chrome tarayıcı parmak izini taklit ederek istek atıyoruz
-        response = requests.get(url, impersonate="chrome", timeout=30)
+        print(f"Mobil istek atılıyor (Cloudflare bypass): {mobile_url}")
+        # Mobil tarayıcı parmak izi (safari/chrome mobile) ile istek atıyoruz
+        response = requests.get(mobile_url, impersonate="safari", timeout=30)
         print(f"HTTP Durum Kodu: {response.status_code}")
         
         if response.status_code != 200:
-            print(f"Hata: Sayfa {response.status_code} döndürdü.")
+            print(f"Hata: Mobil sayfa {response.status_code} döndürdü.")
             return {"price": 0.0, "coupons": []}
             
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -73,17 +76,17 @@ def check_product_page(url):
                     data = json.loads(script.string)
                     if data.get('offers') and data['offers'].get('price'):
                         price = float(data['offers']['price'])
-                        print(f"JSON-LD fiyatı bulundu: {price}")
+                        print(f"Mobil JSON-LD fiyatı bulundu: {price}")
                         break
                     elif data.get('@type') == 'Product' and data.get('offers'):
                         offers = data['offers']
                         if isinstance(offers, list) and offers[0].get('price'):
                             price = float(offers[0]['price'])
-                            print(f"JSON-LD liste fiyatı bulundu: {price}")
+                            print(f"Mobil JSON-LD liste fiyatı bulundu: {price}")
                             break
                         elif isinstance(offers, dict) and offers.get('price'):
                             price = float(offers['price'])
-                            print(f"JSON-LD sözlük fiyatı bulundu: {price}")
+                            print(f"Mobil JSON-LD sözlük fiyatı bulundu: {price}")
                             break
                 except Exception:
                     pass
@@ -96,13 +99,13 @@ def check_product_page(url):
                 meta_tag = soup.find('meta', property='product:price:amount') or soup.find('meta', property='og:price:amount')
                 if meta_tag and meta_tag.get('content'):
                     price = float(meta_tag['content'].replace(',', '.'))
-                    print(f"Meta etiket fiyatı bulundu: {price}")
+                    print(f"Mobil Meta etiket fiyatı bulundu: {price}")
             except Exception as e:
                 print(f"Meta fiyat okuma hatası: {e}")
 
-        # 3. CSS Seçicileri ile Fiyat Yakalama
+        # 3. Mobil CSS Seçicileri ile Fiyat Yakalama
         if price == 0.0:
-            selectors = ['.newPrice ins', '.price-container .newPrice', '.un-price-item', '.product-price', '[itemprop="price"]']
+            selectors = ['.newPrice', '.price', '.campaignPrice', '[itemprop="price"]', '.productPrice']
             for selector in selectors:
                 el = soup.select_one(selector)
                 if el:
@@ -112,16 +115,18 @@ def check_product_page(url):
                     numbers = re.findall(r'\d+[\d\.,]*', clean)
                     if numbers:
                         try:
-                            price = float(numbers[0].replace(".", "").replace(",", "."))
-                            print(f"CSS seçici ile fiyat bulundu: {price}")
-                            break
+                            val = float(numbers[0].replace(".", "").replace(",", "."))
+                            if val > 10:
+                                price = val
+                                print(f"Mobil CSS seçici ({selector}) ile fiyat bulundu: {price}")
+                                break
                         except:
                             pass
 
         # Kuponlar
         coupons = []
         try:
-            coupon_els = soup.select('.coupon-text, .seller-coupon, .coupon')
+            coupon_els = soup.select('.coupon, .campaign, .seller-coupon')
             for el in coupon_els:
                 c_text = el.get_text().strip()
                 if c_text and c_text not in coupons:
@@ -133,7 +138,7 @@ def check_product_page(url):
         return {"price": price, "coupons": coupons}
         
     except Exception as e:
-        print(f"Bağlantı hatası ({url}): {e}")
+        print(f"Bağlantı hatası ({mobile_url}): {e}")
         return {"price": 0.0, "coupons": []}
 
 async def main():
