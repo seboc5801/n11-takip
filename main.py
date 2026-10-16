@@ -51,98 +51,84 @@ def update_product_data(url, price, coupons):
     conn.close()
 
 async def check_product_page(url):
-    """Cloudflare korumasını bypass ederek N11'den fiyat okur"""
+    """N11 mobil sürümü (m.n11.com) üzerinden Cloudflare engelini aşarak fiyat okur"""
+    
+    # Normal n11 linkini mobil linke dönüştürme (Örn: www.n11.com -> m.n11.com)
+    mobile_url = url.replace("www.n11.com", "m.n11.com")
+    
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=True,
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-infobars",
-                "--window-size=1920,1080",
+                "--disable-setuid-sandbox"
             ]
         )
         
-        # Gerçek bir masaüstü tarayıcısını taklit eden context ayarları
+        # Mobil cihaz (iPhone/Android) görünümü ve User-Agent simülasyonu
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-            viewport={"width": 1920, "height": 1080},
+            user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+            viewport={"width": 390, "height": 844},
+            device_scale_factor=3,
+            is_mobile=True,
+            has_touch=True,
             locale="tr-TR",
             timezone_id="Europe/Istanbul"
         )
         
-        # Bot olduğunun anlaşılmaması için navigator.webdriver özelliğini gizle
         await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         
         page = await context.new_page()
         try:
-            print(f"Sayfaya gidiliyor: {url}")
-            # Bot korumalarını atlatmak için isteği 'networkidle' yerine 'domcontentloaded' ile yapıp bekleyelim
-            response = await page.goto(url, timeout=60000, wait_until="domcontentloaded")
+            print(f"Mobil sayfaya gidiliyor: {mobile_url}")
+            response = await page.goto(mobile_url, timeout=60000, wait_until="domcontentloaded")
             print(f"HTTP Durum Kodu: {response.status if response else 'Bilinmiyor'}")
             
-            # Cloudflare engeline takıldıysa biraz bekleyip sayfayı yenilemeyi deneyelim
             title = await page.title()
             print(f"Sayfa Başlığı: {title}")
             
-            if "Attention Required" in title or "Cloudflare" in title:
-                print("Cloudflare engeline takıldı, 5 saniye beklenip tekrar deneniyor...")
-                await asyncio.sleep(5)
-                await page.reload(wait_until="domcontentloaded")
-                title = await page.title()
-                print(f"Yeniden Deneme Sayfa Başlığı: {title}")
-
-            await asyncio.sleep(3)
+            await asyncio.sleep(4)
             
             price = 0.0
             
-            # 1. YÖNTEM: Meta etiketlerinden fiyat okuma (Cloudflare engelini genelde aşar)
+            # 1. Mobil SEO (JSON-LD) Verisi
             try:
-                meta_price = await page.locator('meta[property="product:price:amount"], meta[property="og:price:amount"]').first.get_attribute("content")
-                if meta_price:
-                    price = float(meta_price.replace(",", "."))
-                    print(f"Meta etiketinden fiyat bulundu: {price}")
-            except Exception as e:
-                print(f"Meta fiyat okuma hatası: {e}")
-
-            # 2. YÖNTEM: JSON-LD Verisi
-            if price == 0.0:
-                try:
-                    price = await page.evaluate("""() => {
-                        const scripts = document.querySelectorAll('script[type="application/ld+json"]');
-                        for (let script of scripts) {
-                            try {
-                                const text = script.innerText.trim();
-                                if (!text) continue;
-                                const data = JSON.parse(text);
-                                if (data.offers && data.offers.price) {
+                price = await page.evaluate("""() => {
+                    const scripts = document.querySelectorAll('script[type="application/ld+json"]');
+                    for (let script of scripts) {
+                        try {
+                            const text = script.innerText.trim();
+                            if (!text) continue;
+                            const data = JSON.parse(text);
+                            if (data.offers && data.offers.price) {
+                                return parseFloat(data.offers.price);
+                            }
+                            if (data['@type'] === 'Product' && data.offers) {
+                                if (Array.isArray(data.offers)) {
+                                    return parseFloat(data.offers[0].price);
+                                } else if (data.offers.price) {
                                     return parseFloat(data.offers.price);
                                 }
-                                if (data['@type'] === 'Product' && data.offers) {
-                                    if (Array.isArray(data.offers)) {
-                                        return parseFloat(data.offers[0].price);
-                                    } else if (data.offers.price) {
-                                        return parseFloat(data.offers.price);
-                                    }
-                                }
-                            } catch (e) {}
-                        }
-                        return 0.0;
-                    """)
-                    if price > 0:
-                        print(f"JSON-LD üzerinden fiyat bulundu: {price}")
-                except Exception as e:
-                    print(f"JSON-LD okuma hatası: {e}")
+                            }
+                        } catch (e) {}
+                    }
+                    return 0.0;
+                """)
+                if price > 0:
+                    print(f"Mobil JSON-LD üzerinden fiyat bulundu: {price}")
+            except Exception as e:
+                print(f"JSON-LD okuma hatası: {e}")
 
-            # 3. YÖNTEM: CSS seçicileri
+            # 2. Mobil CSS Seçicileri
             if price == 0.0:
                 price_selectors = [
-                    ".price-container .newPrice ins", 
-                    ".un-price-item", 
+                    ".newPrice", 
+                    ".price-container", 
                     ".product-price", 
                     ".price",
-                    "[itemprop='price']"
+                    "[itemprop='price']",
+                    ".campaignPrice"
                 ]
                 for selector in price_selectors:
                     el = page.locator(selector).first
@@ -150,16 +136,21 @@ async def check_product_page(url):
                         txt = await el.inner_text()
                         clean = txt.replace("TL", "").replace("₺", "").replace(".", "").replace(",", ".").strip()
                         try:
-                            price = float(clean)
-                            print(f"CSS seçici ({selector}) ile fiyat bulundu: {price}")
-                            break
+                            # Metin içindeki ilk geçerli sayısal fiyatı yakalama
+                            import re
+                            numbers = re.findall(r'\d+[\d\.,]*', clean)
+                            if numbers:
+                                price_str = numbers[0].replace(".", "").replace(",", ".")
+                                price = float(price_str)
+                                print(f"Mobil CSS seçici ({selector}) ile fiyat bulundu: {price}")
+                                break
                         except:
                             pass
 
             # Kupon ve kampanya etiketleri
             coupons = []
             try:
-                coupon_elements = await page.locator(".coupon-text, .seller-coupon, .coupon").all()
+                coupon_elements = await page.locator(".coupon, .campaign, .seller-coupon").all()
                 for elem in coupon_elements:
                     c_text = await elem.inner_text()
                     c_text = c_text.strip()
@@ -173,7 +164,7 @@ async def check_product_page(url):
             return {"price": price, "coupons": coupons}
             
         except Exception as e:
-            print(f"Hata oluştu ({url}): {e}")
+            print(f"Hata oluştu ({mobile_url}): {e}")
             await browser.close()
             return {"price": 0.0, "coupons": []}
 
