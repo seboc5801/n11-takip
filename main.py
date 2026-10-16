@@ -51,24 +51,35 @@ def update_product_data(url, price, coupons):
     conn.close()
 
 async def check_product_page(url):
-    """N11 ve diğer sitelerden bot korumasını aşarak fiyat ve kupon okur"""
+    """N11 ve diğer sitelerden fiyat ve kupon okur"""
     async with async_playwright() as p:
-        # Bot algılamasını bypass eden özel argümanlar
         browser = await p.chromium.launch(
             headless=True,
-            args=["--disable-blink-features=AutomationControlled"]
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-setuid-sandbox"
+            ]
         )
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            viewport={"width": 1920, "height": 1080}
         )
         page = await context.new_page()
         try:
-            await page.goto(url, timeout=60000)
-            await page.wait_for_load_state("domcontentloaded")
+            print(f"Sayfaya gidiliyor: {url}")
+            response = await page.goto(url, timeout=60000, wait_until="domcontentloaded")
+            print(f"HTTP Durum Kodu: {response.status}")
+            
+            title = await page.title()
+            print(f"Sayfa Başlığı: {title}")
+            
+            # Biraz bekleme ekleyelim ki JS yüklenip fiyatı bassın
+            await asyncio.sleep(5)
             
             price = 0.0
             
-            # 1. YÖNTEM: Sayfanın SEO (JSON-LD) verisinden nokta atışı fiyat çekme (Asla şaşmaz)
+            # 1. YÖNTEM: Sayfanın SEO (JSON-LD) verisinden fiyat çekme
             try:
                 price = await page.evaluate("""() => {
                     const scripts = document.querySelectorAll('script[type="application/ld+json"]');
@@ -89,21 +100,29 @@ async def check_product_page(url):
                     }
                     return 0.0;
                 """)
-            except Exception:
-                price = 0.0
+            except Exception as e:
+                print(f"JSON-LD okuma hatası: {e}")
 
-            # 2. YÖNTEM: Meta etiketlerinden fiyat yedek kontrolü
+            # 2. YÖNTEM: Meta etiketlerinden fiyat okuma
             if price == 0.0:
                 try:
                     meta_price = await page.locator('meta[property="product:price:amount"], meta[property="og:price:amount"]').first.get_attribute("content")
                     if meta_price:
                         price = float(meta_price.replace(",", "."))
+                        print(f"Meta etiketinden fiyat bulundu: {price}")
                 except Exception:
                     pass
 
-            # 3. YÖNTEM: Görsel sınıf etiketleri yedek kontrolü
+            # 3. YÖNTEM: CSS seçicileri ile arama
             if price == 0.0:
-                price_selectors = [".price-container .newPrice ins", ".un-price-item", ".product-price", ".price"]
+                price_selectors = [
+                    ".price-container .newPrice ins", 
+                    ".un-price-item", 
+                    ".product-price", 
+                    ".price",
+                    "ins[itemprop='price']",
+                    "[itemprop='price']"
+                ]
                 for selector in price_selectors:
                     el = page.locator(selector).first
                     if await el.count() > 0:
@@ -111,6 +130,7 @@ async def check_product_page(url):
                         clean = txt.replace("TL", "").replace("₺", "").replace(".", "").replace(",", ".").strip()
                         try:
                             price = float(clean)
+                            print(f"CSS seçici ({selector}) ile fiyat bulundu: {price}")
                             break
                         except:
                             pass
@@ -128,10 +148,11 @@ async def check_product_page(url):
                 pass
 
             await browser.close()
+            print(f"Okunan Sonuç -> Fiyat: {price}, Kuponlar: {coupons}")
             return {"price": price, "coupons": coupons}
             
         except Exception as e:
-            print(f"Hata ({url}): {e}")
+            print(f"Hata oluştu ({url}): {e}")
             await browser.close()
             return {"price": 0.0, "coupons": []}
 
