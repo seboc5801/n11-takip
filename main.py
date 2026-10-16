@@ -4,7 +4,7 @@ import sqlite3
 import asyncio
 import re
 from telegram import Bot
-from curl_cffi import requests
+from playwright.async_api import async_playwright
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "BURAYA_BOT_TOKEN_YAZ")
 CHAT_ID = os.environ.get("CHAT_ID", "BURAYA_CHAT_ID_YAZ")
@@ -51,52 +51,92 @@ def update_product_data(url, price, coupons):
     conn.commit()
     conn.close()
 
-def check_product_page(url):
-    """N11 ürün URL'sinden ID ayıklayarak API üzerinden Cloudflare'e takılmadan fiyat çeker"""
+async def check_product_page(url):
+    """Playwright ile Cloudflare doğrulama süresini bekleyerek mobil sayfadan fiyat çeker"""
+    mobile_url = url.replace("www.n11.com", "m.n11.com")
     price = 0.0
     coupons = []
     
-    try:
-        # URL'in sonundaki ürün ID'sini yakala (Örn: ...-128692186 -> 128692186)
-        match = re.search(r'-(\d+)(?:[/?#]|$)', url)
-        if not match:
-            print(f"Ürün ID'si URL'den çıkarılamadı: {url}")
-            return {"price": 0.0, "coupons": []}
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-infobars",
+                "--window-size=390,844"
+            ]
+        )
+        
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+            viewport={"width": 390, "height": 844},
+            device_scale_factor=3,
+            is_mobile=True,
+            has_touch=True,
+            locale="tr-TR",
+            timezone_id="Europe/Istanbul"
+        )
+        
+        await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        
+        page = await context.new_page()
+        try:
+            print(f"Tarayıcı ile sayfaya gidiliyor: {mobile_url}")
+            # Cloudflare engeline takılmamak için domcontentloaded ve bekleme süresi
+            response = await page.goto(mobile_url, timeout=60000, wait_until="commit")
             
-        product_id = match.group(1)
-        api_url = f"https://www.n11.com/component/product/getDetail?productId={product_id}"
-        
-        headers = {
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
-            "X-Requested-With": "XMLHttpRequest",
-            "Accept": "application/json, text/javascript, */*; q=0.01"
-        }
-        
-        print(f"API isteği atılıyor: {api_url}")
-        response = requests.get(api_url, headers=headers, impersonate="chrome120", timeout=30)
-        print(f"API HTTP Durum Kodu: {response.status_code}")
-        
-        if response.status_code == 200:
-            data = response.json()
-            # N11 API yanıt yapısından fiyat verisini çekme
-            if "content" in data:
-                content = data["content"]
-                # Fiyat anahtarlarını güvenli şekilde kontrol et
-                raw_price = content.get("price") or content.get("sellingPrice") or content.get("originalPrice")
-                if raw_price:
-                    if isinstance(raw_price, (int, float)):
-                        price = float(raw_price)
-                    else:
-                        clean_str = str(raw_price).replace("TL", "").replace("₺", "").replace(".", "").replace(",", ".").strip()
-                        price = float(clean_str)
-            print(f"API üzerinden çekilen fiyat: {price}")
-        else:
-            # API yanıt vermezse alternatif arama motoru/önbellek veya mobil sayfa denemesi
-            print(f"API {response.status_code} döndürdü.")
+            # Cloudflare'in "Attention Required" veya bekleme ekranını atlatması için 7 saniye veriyoruz
+            print("Cloudflare kontrolü için bekleniyor...")
+            await asyncio.sleep(7)
+            
+            # Sayfada ufak bir scroll hareketi yaparak gerçek kullanıcı simülasyonu
+            await page.mouse.wheel(0, 300)
+            await asyncio.sleep(3)
+            
+            title = await page.title()
+            print(f"Sayfa Başlığı: {title}")
+            
+            # JavaScript ile JSON-LD veya sayfa içi fiyat elementlerini yakalama
+            price = await page.evaluate("""() => {
+                // 1. JSON-LD kontrolü
+                const scripts = document.querySelectorAll('script[type="application/ld+json"]');
+                for (let script of scripts) {
+                    try {
+                        const data = JSON.parse(script.innerText.trim());
+                        if (data.offers && data.offers.price) return parseFloat(data.offers.price);
+                        if (data['@type'] === 'Product' && data.offers) {
+                            if (Array.isArray(data.offers)) return parseFloat(data.offers[0].price);
+                            if (data.offers.price) return parseFloat(data.offers.price);
+                        }
+                    } catch (e) {}
+                }
+                
+                // 2. CSS seçicileri ile arama
+                const selectors = ['.newPrice', '.price', '.campaignPrice', '[itemprop="price"]', '.productPrice', 'ins'];
+                for (let sel of selectors) {
+                    const el = document.querySelector(sel);
+                    if (el) {
+                        const text = el.innerText || '';
+                        const clean = text.replace('TL', '').replace('₺', '').replace('.', '').replace(',', '.').trim();
+                        const match = clean.match(/\\d+/);
+                        if (match) {
+                            const val = parseFloat(match[0]);
+                            if (val > 10) return val;
+                        }
+                    }
+                }
+                return 0.0;
+            """)
+            
+            print(f"Okunan Fiyat: {price}")
 
-    except Exception as e:
-        print(f"API çekme hatası: {e}")
-
+        except Exception as e:
+            print(f"Tarayıcı hata oluştu: {e}")
+        finally:
+            await browser.close()
+            
     return {"price": price, "coupons": coupons}
 
 async def main():
@@ -118,7 +158,7 @@ async def main():
         url = item["url"]
         title = item.get("title", "Ürün")
         
-        data = check_product_page(url)
+        data = await check_product_page(url)
         current_price = data["price"]
         current_coupons = data["coupons"]
 
@@ -146,7 +186,7 @@ async def main():
             if new_coupons:
                 should_notify = True
                 message_lines.append(f"🎟️ **YENİ KUPON VAR!**")
-                message_lines.append(f"Kuponlar: {', '.join(new_coupons)}")
+                message_lines.append(f"Kuponlar: {', '.join(new_new_coupons := new_coupons)}")
 
         if should_notify:
             message_lines.append(f"\n🔗 [Ürüne Git]({url})")
