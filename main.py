@@ -51,76 +51,97 @@ def update_product_data(url, price, coupons):
     conn.close()
 
 async def check_product_page(url):
-    """N11 ve diğer sitelerden fiyat ve kupon okur"""
+    """Cloudflare korumasını bypass ederek N11'den fiyat okur"""
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=True,
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
-                "--disable-setuid-sandbox"
+                "--disable-setuid-sandbox",
+                "--disable-infobars",
+                "--window-size=1920,1080",
             ]
         )
+        
+        # Gerçek bir masaüstü tarayıcısını taklit eden context ayarları
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            viewport={"width": 1920, "height": 1080}
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+            viewport={"width": 1920, "height": 1080},
+            locale="tr-TR",
+            timezone_id="Europe/Istanbul"
         )
+        
+        # Bot olduğunun anlaşılmaması için navigator.webdriver özelliğini gizle
+        await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        
         page = await context.new_page()
         try:
             print(f"Sayfaya gidiliyor: {url}")
+            # Bot korumalarını atlatmak için isteği 'networkidle' yerine 'domcontentloaded' ile yapıp bekleyelim
             response = await page.goto(url, timeout=60000, wait_until="domcontentloaded")
-            print(f"HTTP Durum Kodu: {response.status}")
+            print(f"HTTP Durum Kodu: {response.status if response else 'Bilinmiyor'}")
             
+            # Cloudflare engeline takıldıysa biraz bekleyip sayfayı yenilemeyi deneyelim
             title = await page.title()
             print(f"Sayfa Başlığı: {title}")
             
-            # Biraz bekleme ekleyelim ki JS yüklenip fiyatı bassın
-            await asyncio.sleep(5)
+            if "Attention Required" in title or "Cloudflare" in title:
+                print("Cloudflare engeline takıldı, 5 saniye beklenip tekrar deneniyor...")
+                await asyncio.sleep(5)
+                await page.reload(wait_until="domcontentloaded")
+                title = await page.title()
+                print(f"Yeniden Deneme Sayfa Başlığı: {title}")
+
+            await asyncio.sleep(3)
             
             price = 0.0
             
-            # 1. YÖNTEM: Sayfanın SEO (JSON-LD) verisinden fiyat çekme
+            # 1. YÖNTEM: Meta etiketlerinden fiyat okuma (Cloudflare engelini genelde aşar)
             try:
-                price = await page.evaluate("""() => {
-                    const scripts = document.querySelectorAll('script[type="application/ld+json"]');
-                    for (let script of scripts) {
-                        try {
-                            const data = JSON.parse(script.innerText);
-                            if (data.offers && data.offers.price) {
-                                return parseFloat(data.offers.price);
-                            }
-                            if (data['@type'] === 'Product' && data.offers) {
-                                if (Array.isArray(data.offers)) {
-                                    return parseFloat(data.offers[0].price);
-                                } else if (data.offers.price) {
-                                    return parseFloat(data.offers.price);
-                                }
-                            }
-                        } catch (e) {}
-                    }
-                    return 0.0;
-                """)
+                meta_price = await page.locator('meta[property="product:price:amount"], meta[property="og:price:amount"]').first.get_attribute("content")
+                if meta_price:
+                    price = float(meta_price.replace(",", "."))
+                    print(f"Meta etiketinden fiyat bulundu: {price}")
             except Exception as e:
-                print(f"JSON-LD okuma hatası: {e}")
+                print(f"Meta fiyat okuma hatası: {e}")
 
-            # 2. YÖNTEM: Meta etiketlerinden fiyat okuma
+            # 2. YÖNTEM: JSON-LD Verisi
             if price == 0.0:
                 try:
-                    meta_price = await page.locator('meta[property="product:price:amount"], meta[property="og:price:amount"]').first.get_attribute("content")
-                    if meta_price:
-                        price = float(meta_price.replace(",", "."))
-                        print(f"Meta etiketinden fiyat bulundu: {price}")
-                except Exception:
-                    pass
+                    price = await page.evaluate("""() => {
+                        const scripts = document.querySelectorAll('script[type="application/ld+json"]');
+                        for (let script of scripts) {
+                            try {
+                                const text = script.innerText.trim();
+                                if (!text) continue;
+                                const data = JSON.parse(text);
+                                if (data.offers && data.offers.price) {
+                                    return parseFloat(data.offers.price);
+                                }
+                                if (data['@type'] === 'Product' && data.offers) {
+                                    if (Array.isArray(data.offers)) {
+                                        return parseFloat(data.offers[0].price);
+                                    } else if (data.offers.price) {
+                                        return parseFloat(data.offers.price);
+                                    }
+                                }
+                            } catch (e) {}
+                        }
+                        return 0.0;
+                    """)
+                    if price > 0:
+                        print(f"JSON-LD üzerinden fiyat bulundu: {price}")
+                except Exception as e:
+                    print(f"JSON-LD okuma hatası: {e}")
 
-            # 3. YÖNTEM: CSS seçicileri ile arama
+            # 3. YÖNTEM: CSS seçicileri
             if price == 0.0:
                 price_selectors = [
                     ".price-container .newPrice ins", 
                     ".un-price-item", 
                     ".product-price", 
                     ".price",
-                    "ins[itemprop='price']",
                     "[itemprop='price']"
                 ]
                 for selector in price_selectors:
