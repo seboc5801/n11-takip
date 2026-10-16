@@ -1,31 +1,40 @@
-name: Indirim Botu Otomasyonu
+name: N11 Fiyat Takip
 
 on:
   schedule:
-    # Her 2 saatte bir çalışır
-    - cron: '0 */2 * * *'
-  workflow_dispatch: # Manuel test için
+    - cron: '0 */4 * * *' # Örn: Her 4 saatte bir çalışır
+  workflow_dispatch:
 
 jobs:
-  run-bot:
+  build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Kodları Depodan Çek
+      - name: Kodları İndir
         uses: actions/checkout@v4
 
-      - name: Python Ortamını Kur
+      - name: Python Kur
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Gerekli Kütüphaneleri Yükle
+      - name: Bağımlılıkları Yükle
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install --upgrade pip
+          pip install requests beautifulsoup4 python-telegram-bot
+
+      # --- İŞTE SİHİRLİ VE TEMİZ KISIM BURASI ---
+      - name: Veritabanını Önbellekten Geri Yükle
+        uses: actions/cache@v4
+        with:
+          path: bot_data.db
+          key: n11-db-cache-${{ github.run_id }}
+          restore-keys: |
+            n11-db-cache-
+      # ------------------------------------------
 
       - name: Botu Çalıştır
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: |
-          python main.py
+        run: python main.py
