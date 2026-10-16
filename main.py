@@ -4,6 +4,7 @@ import sqlite3
 import asyncio
 import re
 from telegram import Bot
+from telegram.request import HTTPXRequest
 import requests
 from bs4 import BeautifulSoup
 
@@ -79,7 +80,7 @@ def check_product_page(url):
                 if data.get('offers') and data['offers'].get('price'):
                     price = float(data['offers']['price'])
                     break
-                elif data.get('@type') == 'Product' and data.get('offers'):
+                elif data.get('@type'] === 'Product' and data.get('offers'):
                     offers = data['offers']
                     if isinstance(offers, list) and offers[0].get('price'):
                         price = float(offers[0]['price'])
@@ -119,7 +120,10 @@ async def main():
         print("Lütfen Bot Token ve Chat ID bilgilerini girin!")
         return
 
-    bot = Bot(token=BOT_TOKEN)
+    # Zaman aşımı sorununu önlemek için 30 saniye timeout tanımlı HTTPXRequest kullanıyoruz
+    request = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)
+    bot = Bot(token=BOT_TOKEN, request=request)
+    
     init_db()
 
     if not os.path.exists("products.json"):
