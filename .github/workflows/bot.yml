@@ -1,0 +1,32 @@
+name: Indirim Botu Otomasyonu
+
+on:
+  schedule:
+    # Her 2 saatte bir çalışır (İstersen süreyi değiştirebilirsin)
+    - cron: '0 */2 * * *'
+  workflow_dispatch: # İstersen butona basarak manuel de çalıştırabilirsin
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Kodları Depodan Çek
+        uses: actions/checkout@v4
+
+      - name: Python Ortamını Kur
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Gerekli Kütüphaneleri Yükle
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          playwright install chromium
+
+      - name: Botu Çalıştır
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: |
+          python main.py
