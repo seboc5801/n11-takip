@@ -51,32 +51,58 @@ def update_product_data(url, price, coupons):
     conn.close()
 
 async def check_product_page(url):
-    """Web sitesine async olarak gidip gerçek fiyatı ve kuponları okur"""
+    """N11 ve genel e-ticaret sitelerinden fiyat ve kupon okur"""
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
+        # Bot tespitini engellemek için User-Agent tanımı
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        page = await context.new_page()
         try:
             await page.goto(url, timeout=60000)
             await page.wait_for_load_state("networkidle")
             
             price = 0.0
-            try:
-                price_locator = page.locator(".price, .product-price, .add-to-cart-price").first
-                price_text = await price_locator.inner_text()
-                price = float(price_text.replace("TL", "").replace("₺", "").replace(".", "").replace(",", ".").strip())
-            except Exception:
-                price = 0.0
+            # N11 ve popüler sitelerin olası fiyat etiketleri
+            price_selectors = [
+                ".price-container .newPrice ins",
+                ".un-price-item",
+                ".product-price",
+                ".add-to-cart-price",
+                "[data-price]",
+                ".price"
+            ]
+            
+            price_text = ""
+            for selector in price_selectors:
+                element = page.locator(selector).first
+                if await element.count() > 0:
+                    price_text = await element.inner_text()
+                    if price_text.strip():
+                        break
+            
+            if price_text:
+                # Fiyat metnini sayıya dönüştürme
+                clean_price = price_text.replace("TL", "").replace("₺", "").replace(".", "").replace(",", ".").strip()
+                try:
+                    price = float(clean_price)
+                except ValueError:
+                    price = 0.0
 
             coupons = []
-            try:
-                coupon_elements = await page.locator(".coupon, .seller-coupon").all()
-                for elem in coupon_elements:
-                    c_text = await elem.inner_text()
-                    c_text = c_text.strip()
-                    if c_text:
-                        coupons.append(c_text)
-            except Exception:
-                pass
+            # Kupon ve kampanya etiketleri
+            coupon_selectors = [".coupon-text", ".seller-coupon", ".product-campaign-item", ".coupon"]
+            for c_selector in coupon_selectors:
+                try:
+                    coupon_elements = await page.locator(c_selector).all()
+                    for elem in coupon_elements:
+                        c_text = await elem.inner_text()
+                        c_text = c_text.strip()
+                        if c_text and c_text not in coupons:
+                            coupons.append(c_text)
+                except Exception:
+                    pass
 
             await browser.close()
             return {"price": price, "coupons": coupons}
@@ -110,6 +136,7 @@ async def main():
         current_coupons = data["coupons"]
 
         if current_price == 0.0:
+            print(f"Fiyat çekilemedi: {title}")
             continue
 
         old_data = get_product_data(url)
