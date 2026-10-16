@@ -51,9 +51,7 @@ def update_product_data(url, price, coupons):
     conn.close()
 
 async def check_product_page(url):
-    """N11 mobil sürümü (m.n11.com) üzerinden Cloudflare engelini aşarak fiyat okur"""
-    
-    # Normal n11 linkini mobil linke dönüştürme (Örn: www.n11.com -> m.n11.com)
+    """N11 mobil sürümü üzerinden fiyat ve kupon okur"""
     mobile_url = url.replace("www.n11.com", "m.n11.com")
     
     async with async_playwright() as p:
@@ -66,7 +64,6 @@ async def check_product_page(url):
             ]
         )
         
-        # Mobil cihaz (iPhone/Android) görünümü ve User-Agent simülasyonu
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
             viewport={"width": 390, "height": 844},
@@ -88,64 +85,41 @@ async def check_product_page(url):
             title = await page.title()
             print(f"Sayfa Başlığı: {title}")
             
-            await asyncio.sleep(4)
+            # Sayfanın tamamen yüklenmesi için biraz esneme payı
+            await asyncio.sleep(5)
             
             price = 0.0
             
-            # 1. Mobil SEO (JSON-LD) Verisi
+            # Akıllı JavaScript Fiyat Yakalayıcı (Mobil sayfa yapısına özel esnek tarama)
             try:
                 price = await page.evaluate("""() => {
-                    const scripts = document.querySelectorAll('script[type="application/ld+json"]');
-                    for (let script of scripts) {
-                        try {
-                            const text = script.innerText.trim();
-                            if (!text) continue;
-                            const data = JSON.parse(text);
-                            if (data.offers && data.offers.price) {
-                                return parseFloat(data.offers.price);
-                            }
-                            if (data['@type'] === 'Product' && data.offers) {
-                                if (Array.isArray(data.offers)) {
-                                    return parseFloat(data.offers[0].price);
-                                } else if (data.offers.price) {
-                                    return parseFloat(data.offers.price);
+                    // Fiyat barındırabilecek olası tüm seçiciler
+                    const selectors = ['.price', '.newPrice', '.campaignPrice', '[itemprop="price"]', '.productPrice', 'ins', 'span'];
+                    for (let sel of selectors) {
+                        const elements = document.querySelectorAll(sel);
+                        for (let el of elements) {
+                            const text = el.innerText || '';
+                            // İçinde TL veya ₺ geçen veya fiyat formatına benzeyen metinleri incele
+                            if (text.includes('TL') || text.includes('₺') || text.includes(',')) {
+                                const cleanText = text.replace('TL', '').replace('₺', '').trim();
+                                // Rakam ve ayraçları ayıkla
+                                const match = cleanText.match(/\\d{1,3}(?:[.,]\\d{3})*(?:[.,]\\d{2})?/);
+                                if (match) {
+                                    let numStr = match[0].replace(/\\./g, '').replace(',', '.');
+                                    let val = parseFloat(numStr);
+                                    // Mantıklı bir ürün fiyatı aralığında ise (10 TL'den büyük) kabul et
+                                    if (val > 10) {
+                                        return val;
+                                    }
                                 }
                             }
-                        } catch (e) {}
+                        }
                     }
                     return 0.0;
                 """)
-                if price > 0:
-                    print(f"Mobil JSON-LD üzerinden fiyat bulundu: {price}")
+                print(f"Akıllı tarayıcı ile bulunan fiyat: {price}")
             except Exception as e:
-                print(f"JSON-LD okuma hatası: {e}")
-
-            # 2. Mobil CSS Seçicileri
-            if price == 0.0:
-                price_selectors = [
-                    ".newPrice", 
-                    ".price-container", 
-                    ".product-price", 
-                    ".price",
-                    "[itemprop='price']",
-                    ".campaignPrice"
-                ]
-                for selector in price_selectors:
-                    el = page.locator(selector).first
-                    if await el.count() > 0:
-                        txt = await el.inner_text()
-                        clean = txt.replace("TL", "").replace("₺", "").replace(".", "").replace(",", ".").strip()
-                        try:
-                            # Metin içindeki ilk geçerli sayısal fiyatı yakalama
-                            import re
-                            numbers = re.findall(r'\d+[\d\.,]*', clean)
-                            if numbers:
-                                price_str = numbers[0].replace(".", "").replace(",", ".")
-                                price = float(price_str)
-                                print(f"Mobil CSS seçici ({selector}) ile fiyat bulundu: {price}")
-                                break
-                        except:
-                            pass
+                print(f"Fiyat arama betik hatası: {e}")
 
             # Kupon ve kampanya etiketleri
             coupons = []
