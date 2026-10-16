@@ -4,7 +4,8 @@ import sqlite3
 import asyncio
 import re
 from telegram import Bot
-from playwright.async_api import async_playwright
+import requests
+from bs4 import BeautifulSoup
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "BURAYA_BOT_TOKEN_YAZ")
 CHAT_ID = os.environ.get("CHAT_ID", "BURAYA_CHAT_ID_YAZ")
@@ -51,92 +52,66 @@ def update_product_data(url, price, coupons):
     conn.commit()
     conn.close()
 
-async def check_product_page(url):
-    """Playwright ile Cloudflare doğrulama süresini bekleyerek mobil sayfadan fiyat çeker"""
+def check_product_page(url):
     mobile_url = url.replace("www.n11.com", "m.n11.com")
     price = 0.0
     coupons = []
     
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-infobars",
-                "--window-size=390,844"
-            ]
-        )
+    headers = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7"
+    }
+    
+    try:
+        print(f"Mobil sayfaya istek atılıyor: {mobile_url}")
+        response = requests.get(mobile_url, headers=headers, timeout=30)
+        print(f"HTTP Durum Kodu: {response.status_code}")
         
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-            viewport={"width": 390, "height": 844},
-            device_scale_factor=3,
-            is_mobile=True,
-            has_touch=True,
-            locale="tr-TR",
-            timezone_id="Europe/Istanbul"
-        )
+        if response.status_code != 200:
+            return {"price": 0.0, "coupons": []}
+            
+        soup = BeautifulSoup(response.text, 'html.parser')
         
-        await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-        
-        page = await context.new_page()
-        try:
-            print(f"Tarayıcı ile sayfaya gidiliyor: {mobile_url}")
-            # Cloudflare engeline takılmamak için domcontentloaded ve bekleme süresi
-            response = await page.goto(mobile_url, timeout=60000, wait_until="commit")
-            
-            # Cloudflare'in "Attention Required" veya bekleme ekranını atlatması için 7 saniye veriyoruz
-            print("Cloudflare kontrolü için bekleniyor...")
-            await asyncio.sleep(7)
-            
-            # Sayfada ufak bir scroll hareketi yaparak gerçek kullanıcı simülasyonu
-            await page.mouse.wheel(0, 300)
-            await asyncio.sleep(3)
-            
-            title = await page.title()
-            print(f"Sayfa Başlığı: {title}")
-            
-            # JavaScript ile JSON-LD veya sayfa içi fiyat elementlerini yakalama
-            price = await page.evaluate("""() => {
-                // 1. JSON-LD kontrolü
-                const scripts = document.querySelectorAll('script[type="application/ld+json"]');
-                for (let script of scripts) {
-                    try {
-                        const data = JSON.parse(script.innerText.trim());
-                        if (data.offers && data.offers.price) return parseFloat(data.offers.price);
-                        if (data['@type'] === 'Product' && data.offers) {
-                            if (Array.isArray(data.offers)) return parseFloat(data.offers[0].price);
-                            if (data.offers.price) return parseFloat(data.offers.price);
-                        }
-                    } catch (e) {}
-                }
-                
-                // 2. CSS seçicileri ile arama
-                const selectors = ['.newPrice', '.price', '.campaignPrice', '[itemprop="price"]', '.productPrice', 'ins'];
-                for (let sel of selectors) {
-                    const el = document.querySelector(sel);
-                    if (el) {
-                        const text = el.innerText || '';
-                        const clean = text.replace('TL', '').replace('₺', '').replace('.', '').replace(',', '.').trim();
-                        const match = clean.match(/\\d+/);
-                        if (match) {
-                            const val = parseFloat(match[0]);
-                            if (val > 10) return val;
-                        }
-                    }
-                }
-                return 0.0;
-            """)
-            
-            print(f"Okunan Fiyat: {price}")
+        # 1. JSON-LD (SEO) Verisi
+        for script in soup.find_all('script', type='application/ld+json'):
+            try:
+                data = json.loads(script.string)
+                if data.get('offers') and data['offers'].get('price'):
+                    price = float(data['offers']['price'])
+                    break
+                elif data.get('@type') == 'Product' and data.get('offers'):
+                    offers = data['offers']
+                    if isinstance(offers, list) and offers[0].get('price'):
+                        price = float(offers[0]['price'])
+                        break
+                    elif isinstance(offers, dict) and offers.get('price'):
+                        price = float(offers['price'])
+                        break
+            except Exception:
+                pass
 
-        except Exception as e:
-            print(f"Tarayıcı hata oluştu: {e}")
-        finally:
-            await browser.close()
-            
+        # 2. CSS Seçicileri
+        if price == 0.0:
+            selectors = ['.newPrice', '.price', '.campaignPrice', '[itemprop="price"]', '.productPrice']
+            for selector in selectors:
+                el = soup.select_one(selector)
+                if el:
+                    txt = el.get_text().strip()
+                    clean = txt.replace("TL", "").replace("₺", "").replace(".", "").replace(",", ".").strip()
+                    numbers = re.findall(r'\d+[\d\.,]*', clean)
+                    if numbers:
+                        try:
+                            val = float(numbers[0].replace(".", "").replace(",", "."))
+                            if val > 10:
+                                price = val
+                                break
+                        except:
+                            pass
+
+        print(f"Okunan Fiyat: {price}")
+    except Exception as e:
+        print(f"Hata: {e}")
+        
     return {"price": price, "coupons": coupons}
 
 async def main():
@@ -148,7 +123,6 @@ async def main():
     init_db()
 
     if not os.path.exists("products.json"):
-        print("products.json dosyası bulunamadı!")
         return
 
     with open("products.json", "r", encoding="utf-8") as f:
@@ -158,7 +132,7 @@ async def main():
         url = item["url"]
         title = item.get("title", "Ürün")
         
-        data = await check_product_page(url)
+        data = check_product_page(url)
         current_price = data["price"]
         current_coupons = data["coupons"]
 
@@ -173,20 +147,12 @@ async def main():
         if old_data is None:
             should_notify = True
             message_lines.append(f"💰 Güncel Fiyat: {current_price} TL")
-            if current_coupons:
-                message_lines.append(f"🎟️ Aktif Kuponlar: {', '.join(current_coupons)}")
         else:
             if current_price < old_data["last_price"]:
                 should_notify = True
                 message_lines.append(f"🔥 **FİYAT DÜŞTÜ!**")
                 message_lines.append(f"📉 Eski Fiyat: {old_data['last_price']} TL")
                 message_lines.append(f"💰 Yeni Fiyat: {current_price} TL")
-
-            new_coupons = [c for c in current_coupons if c not in old_data["last_coupons"]]
-            if new_coupons:
-                should_notify = True
-                message_lines.append(f"🎟️ **YENİ KUPON VAR!**")
-                message_lines.append(f"Kuponlar: {', '.join(new_new_coupons := new_coupons)}")
 
         if should_notify:
             message_lines.append(f"\n🔗 [Ürüne Git]({url})")
