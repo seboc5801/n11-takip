@@ -66,14 +66,17 @@ def fetch_store_products(store_url):
     
     try:
         response = requests.get(store_url, headers=headers, timeout=30)
+        print(f"Sayfa HTTP Kodu: {response.status_code}")
+        
         if response.status_code != 200:
-            print(f"Mağaza sayfasına erişilemedi: {store_url} (Kod: {response.status_code})")
+            print(f"Mağaza sayfasına erişilemedi: {store_url}")
             return products
             
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # N11 mağaza sayfasındaki ürün kartları
-        items = soup.select('.column, .productItem, li.column')
+        # N11 mağaza sayfasındaki ürün kartları için genişletilmiş seçiciler
+        items = soup.select('.column, .productItem, li.column, .catItemList li, .listItem, div[class*="product"]')
+        print(f"Bulunan toplam ürün kartı sayısı: {len(items)}")
         
         for item in items:
             # Ürün Linki
@@ -87,12 +90,12 @@ def fetch_store_products(store_url):
                 url = "https://www.n11.com" + url
             
             # Ürün Adı
-            title_el = item.select_one('.productName, .title, h3, h4')
+            title_el = item.select_one('.productName, .title, h3, h4, .text-box, [class*="name"]')
             title = title_el.get_text().strip() if title_el else "N11 Ürünü"
             
             # Fiyat (Önce sepet/indirimli fiyat aranır, yoksa normal fiyat alınır)
             price = 0.0
-            price_el = item.select_one('.discountedPrice, .newPrice, .price, .value')
+            price_el = item.select_one('.discountedPrice, .newPrice, .price, .value, ins, [class*="price"]')
             if price_el:
                 txt = price_el.get_text().strip()
                 clean = txt.replace("TL", "").replace("₺", "").replace(".", "").replace(",", ".").strip()
@@ -116,6 +119,7 @@ def fetch_store_products(store_url):
     except Exception as e:
         print(f"Mağaza taranırken hata oluştu {store_url}: {e}")
         
+    print(f"Listeye eklenen geçerli ürün sayısı: {len(products)}")
     return products
 
 async def main():
@@ -135,7 +139,6 @@ async def main():
     with open("products.json", "r", encoding="utf-8") as f:
         store_urls = json.load(f)
 
-    # products.json içinde artık mağaza linkleri yer alıyor (Örn: https://www.n11.com/magaza/komili)
     for store_url in store_urls:
         print(f"Mağaza taranıyor: {store_url}")
         store_products = fetch_store_products(store_url)
