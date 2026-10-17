@@ -1,12 +1,6 @@
 name: N11 Fiyat Takip
 
 on:
-  schedule:
-    # Her 15 dakikada bir düzenli çalışması için:
-    - cron: '0 * * * *'
-    - cron: '15 * * * *'
-    - cron: '30 * * * *'
-    - cron: '45 * * * *'
   workflow_dispatch:
   repository_dispatch:
     types: [run-bot]
