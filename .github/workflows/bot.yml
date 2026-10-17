@@ -1,9 +1,9 @@
 name: N11 Fiyat Takip
 
 on:
-  schedule:
-    - cron: '0 * * * *' # Her saat başı güvenli çalışma
   workflow_dispatch:
+  repository_dispatch:
+    types: [run-bot]
 
 jobs:
   build:
@@ -23,7 +23,7 @@ jobs:
           pip install --upgrade pip
           pip install requests beautifulsoup4 python-telegram-bot
 
-      # --- İŞTE SİHİRLİ VE TEMİZ KISIM BURASI ---
+      # --- VERİTABANI ÖNBELLEKLEME ---
       - name: Veritabanını Önbellekten Geri Yükle
         uses: actions/cache@v4
         with:
@@ -31,7 +31,7 @@ jobs:
           key: n11-db-cache-${{ github.run_id }}
           restore-keys: |
             n11-db-cache-
-      # ------------------------------------------
+      # -------------------------------
 
       - name: Botu Çalıştır
         env:
