@@ -24,6 +24,12 @@ def init_db():
             last_coupons TEXT
         )
     ''')
+    # Veritabanında title sütunu yoksa otomatik ekle (Cache kaynaklı hataları önler)
+    cursor.execute("PRAGMA table_info(products)")
+    columns = [col[1] for col in cursor.fetchall()]
+    if "title" not in columns:
+        cursor.execute("ALTER TABLE products ADD COLUMN title TEXT")
+    
     conn.commit()
     conn.close()
 
