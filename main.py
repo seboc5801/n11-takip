@@ -79,6 +79,7 @@ def check_product_page(url):
             
         soup = BeautifulSoup(response.text, 'html.parser')
         
+        # 1. JSON-LD üzerinden fiyat yakalama
         for script in soup.find_all('script', type='application/ld+json'):
             try:
                 data = json.loads(script.string)
@@ -96,6 +97,7 @@ def check_product_page(url):
             except Exception:
                 pass
 
+        # 2. HTML Seçiciler ile fiyat yakalama (JSON boş dönerse)
         if price == 0.0:
             selectors = ['.newPrice', '.price', '.campaignPrice', '[itemprop="price"]', '.productPrice']
             for selector in selectors:
@@ -112,6 +114,16 @@ def check_product_page(url):
                                 break
                         except:
                             pass
+
+        # 3. Sayfadaki Ürün / Mağaza Kuponlarını Yakalama
+        coupon_elements = soup.select('.coupon, .pro-coupon, [class*="coupon"], [class*="indirim"], .campaign-title')
+        for el in coupon_elements:
+            coupon_text = el.get_text().strip()
+            # İçinde 'TL' veya 'indirim' geçen kupon metinlerini yakala
+            if "TL" in coupon_text or "₺" in coupon_text or "İndirim" in coupon_text:
+                if coupon_text not in coupons:
+                    coupons.append(coupon_text)
+
     except Exception as e:
         print(f"Hata: {e}")
         
@@ -150,12 +162,24 @@ async def main():
         if old_data is None:
             should_notify = True
             message_lines.append(f"💰 Güncel Fiyat: {current_price} TL")
+            if current_coupons:
+                message_lines.append(f"🎟️ **Kuponlar:** " + ", ".join(current_coupons))
         else:
-            if current_price < old_data["last_price"]:
+            price_dropped = current_price < old_data["last_price"]
+            # Yeni bir kupon eklendiyse de bildirim tetiklensin
+            new_coupons_found = any(c not in old_data["last_coupons"] for c in current_coupons)
+
+            if price_dropped or new_coupons_found:
                 should_notify = True
-                message_lines.append(f"🔥 **FİYAT DÜŞTÜ!**")
-                message_lines.append(f"📉 Eski Fiyat: {old_data['last_price']} TL")
-                message_lines.append(f"💰 Yeni Fiyat: {current_price} TL")
+                if price_dropped:
+                    message_lines.append(f"🔥 **FİYAT DÜŞTÜ!**")
+                    message_lines.append(f"📉 Eski Fiyat: {old_data['last_price']} TL")
+                    message_lines.append(f"💰 Yeni Fiyat: {current_price} TL")
+                else:
+                    message_lines.append(f"💰 Güncel Fiyat: {current_price} TL")
+
+                if current_coupons:
+                    message_lines.append(f"🎟️ **Aktif Kuponlar:** " + ", ".join(current_coupons))
 
         if should_notify:
             message_lines.append(f"\n🔗 [Ürüne Git]({url})")
