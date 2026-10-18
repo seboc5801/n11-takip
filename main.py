@@ -55,51 +55,51 @@ def update_product_data(url, price, coupons):
 
 def url_to_title(url):
     try:
-        # URL'den ürün adını otomatik türetir (Örn: roborock-s9-akilli-robot -> Roborock S9 Akilli Robot)
         part = url.split("/urun/")[1].split("?")[0]
-        name_slug = part.rsplit("-", 1)[0] # Sondaki ID'yi ayıklar
+        name_slug = part.rsplit("-", 1)[0]
         return name_slug.replace("-", " ").title()
     except:
         return "N11 Ürünü"
 
 def check_product_page(url):
-    mobile_url = url.replace("www.n11.com", "m.n11.com")
+    # Masaüstü ve mobil sürümleri birlikte değerlendirelim
     price = 0.0
     coupons = []
     
     headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7"
     }
     
     try:
-        response = requests.get(mobile_url, headers=headers, timeout=30)
+        response = requests.get(url, headers=headers, timeout=30)
         if response.status_code != 200:
             return {"price": 0.0, "coupons": []}
             
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # 1. JSON-LD üzerinden fiyat yakalama
+        # 1. JSON-LD Fiyat Taraması
         for script in soup.find_all('script', type='application/ld+json'):
             try:
                 data = json.loads(script.string)
-                if data.get('offers') and data['offers'].get('price'):
-                    price = float(data['offers']['price'])
-                    break
-                elif data.get('@type') == 'Product' and data.get('offers'):
-                    offers = data['offers']
-                    if isinstance(offers, list) and offers[0].get('price'):
-                        price = float(offers[0].get('price'))
+                if isinstance(data, dict):
+                    if data.get('offers') and data['offers'].get('price'):
+                        price = float(data['offers']['price'])
                         break
-                    elif isinstance(offers, dict) and offers.get('price'):
-                        price = float(offers.get('price'))
-                        break
+                    elif data.get('@type') == 'Product' and data.get('offers'):
+                        offers = data['offers']
+                        if isinstance(offers, list) and offers[0].get('price'):
+                            price = float(offers[0].get('price'))
+                            break
+                        elif isinstance(offers, dict) and offers.get('price'):
+                            price = float(offers.get('price'))
+                            break
             except Exception:
                 pass
 
-        # 2. HTML Seçiciler ile fiyat yakalama (JSON boş dönerse)
+        # 2. HTML Fiyat Taraması (JSON-LD bulunamazsa)
         if price == 0.0:
-            selectors = ['.newPrice', '.price', '.campaignPrice', '[itemprop="price"]', '.productPrice']
+            selectors = ['.newPrice', '.price', '.campaignPrice', '[itemprop="price"]', '.productPrice', '.ins-price']
             for selector in selectors:
                 el = soup.select_one(selector)
                 if el:
@@ -115,17 +115,34 @@ def check_product_page(url):
                         except:
                             pass
 
-        # 3. Sayfadaki Ürün / Mağaza Kuponlarını Yakalama
-        coupon_elements = soup.select('.coupon, .pro-coupon, [class*="coupon"], [class*="indirim"], .campaign-title')
-        for el in coupon_elements:
-            coupon_text = el.get_text().strip()
-            # İçinde 'TL' veya 'indirim' geçen kupon metinlerini yakala
-            if "TL" in coupon_text or "₺" in coupon_text or "İndirim" in coupon_text:
-                if coupon_text not in coupons:
-                    coupons.append(coupon_text)
+        # 3. Gelişmiş Kupon ve Kampanya Taraması
+        # a) Sayfa içindeki kupon ve indirim etiketleri
+        coupon_selectors = [
+            '.coupon-item', '.seller-coupon', '.couponText', '.campaign-name', 
+            '.badge-text', '[class*="coupon"]', '[class*="indirim"]', '.promotion-title'
+        ]
+        
+        for selector in coupon_selectors:
+            elements = soup.select(selector)
+            for el in elements:
+                txt = el.get_text().strip()
+                # Metinde 100 TL İndirim, 2000 TL Kupon gibi ifadeleri ara
+                matches = re.findall(r'\b\d+[\d\.]*\s*(?:TL|₺)\s*(?:indirim|kupon|fırsat)?\b', txt, re.IGNORECASE)
+                for match in matches:
+                    if match not in coupons:
+                        coupons.append(match)
+                        
+        # b) Script etiketleri içindeki gizli kampanya/kupon JS objeleri
+        scripts = soup.find_all('script')
+        for s in scripts:
+            if s.string and ('coupon' in s.string.lower() or 'indirim' in s.string.lower()):
+                found_coupons = re.findall(r'(\d+\s*TL\s*İndirim|\d+\s*TL\s*Kupon)', s.string, re.IGNORECASE)
+                for c in found_coupons:
+                    if c not in coupons:
+                        coupons.append(c)
 
     except Exception as e:
-        print(f"Hata: {e}")
+        print(f"Hata oluştu ({url}): {e}")
         
     return {"price": price, "coupons": coupons}
 
@@ -140,6 +157,7 @@ async def main():
     init_db()
 
     if not os.path.exists("products.json"):
+        print("products.json bulunamadı!")
         return
 
     with open("products.json", "r", encoding="utf-8") as f:
@@ -152,7 +170,7 @@ async def main():
         current_coupons = data["coupons"]
 
         if current_price == 0.0:
-            print(f"Fiyat çekilemedi: {title}")
+            print(f"❌ Fiyat çekilemedi: {title}")
             continue
 
         old_data = get_product_data(url)
@@ -163,10 +181,9 @@ async def main():
             should_notify = True
             message_lines.append(f"💰 Güncel Fiyat: {current_price} TL")
             if current_coupons:
-                message_lines.append(f"🎟️ **Kuponlar:** " + ", ".join(current_coupons))
+                message_lines.append(f"🎟️ **Açıklamadaki Kuponlar:** " + ", ".join(current_coupons))
         else:
             price_dropped = current_price < old_data["last_price"]
-            # Yeni bir kupon eklendiyse de bildirim tetiklensin
             new_coupons_found = any(c not in old_data["last_coupons"] for c in current_coupons)
 
             if price_dropped or new_coupons_found:
@@ -179,7 +196,7 @@ async def main():
                     message_lines.append(f"💰 Güncel Fiyat: {current_price} TL")
 
                 if current_coupons:
-                    message_lines.append(f"🎟️ **Aktif Kuponlar:** " + ", ".join(current_coupons))
+                    message_lines.append(f"🎟️ **Aktif Kupon/İndirim:** " + ", ".join(current_coupons))
 
         if should_notify:
             message_lines.append(f"\n🔗 [Ürüne Git]({url})")
