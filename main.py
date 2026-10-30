@@ -6,7 +6,7 @@ import re
 import time
 from telegram import Bot
 from telegram.request import HTTPXRequest
-import requests
+import cloudscraper
 from bs4 import BeautifulSoup
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "BURAYA_BOT_TOKEN_YAZ")
@@ -66,23 +66,22 @@ def check_product_page(url):
     price = 0.0
     coupons = []
     
-    # Cloudscraper yerine gerçekçi tarayıcı başlıkları kullanan requests yapılandırması
+    scraper = cloudscraper.create_scraper(
+        browser={
+            'browser': 'chrome',
+            'platform': 'windows',
+            'desktop': True
+        }
+    )
+    
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
-        "Cache-Control": "max-age=0"
+        "Referer": "https://www.n11.com/"
     }
     
     try:
-        response = requests.get(url, headers=headers, timeout=30)
+        response = scraper.get(url, headers=headers, timeout=30)
         if response.status_code != 200:
             print(f"HTTP Durum Kodu: {response.status_code} - URL: {url}")
             return {"price": 0.0, "coupons": []}
@@ -159,7 +158,7 @@ async def main():
 
         if current_price == 0.0:
             print(f"Fiyat çekilemedi: {title}")
-            time.sleep(1)
+            time.sleep(1.5)
             continue
 
         old_data = get_product_data(url)
