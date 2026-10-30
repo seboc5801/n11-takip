@@ -14,7 +14,7 @@ CHAT_ID = os.environ.get("CHAT_ID", "BURAYA_CHAT_ID_YAZ")
 
 DB_NAME = "bot_data.db"
 
-# Çalışan mağaza kodundaki sağlam SESSION ve Header yapısı
+# Sağlam SESSION ve Header yapısı
 SESSION = requests.Session()
 SESSION.headers.update({
     "User-Agent": (
@@ -76,6 +76,23 @@ def url_to_title(url):
     except:
         return "N11 Ürünü"
 
+def kartlari_bul(soup):
+    links = soup.select('a[href*="/urun/"]')
+    results = []
+    seen = set()
+    for link in links:
+        href = link.get("href", "")
+        if not href.startswith("http"):
+            href = "https://www.n11.com" + href
+        # URL temizleme
+        p = urlsplit(href)
+        clean_url = f"{p.scheme}://{p.netloc}{p.path.rstrip('/')}"
+        if clean_url in seen:
+            continue
+        seen.add(clean_url)
+        results.append(clean_url)
+    return results
+
 def check_product_page(url):
     price = 0.0
     coupons = []
@@ -87,7 +104,7 @@ def check_product_page(url):
             
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # 1. JSON-LD üzerinden fiyat yakalama (Çalışan mağaza kodundaki mantık)
+        # 1. JSON-LD üzerinden fiyat yakalama
         for script in soup.find_all('script', type='application/ld+json'):
             try:
                 script_text = script.string or script.get_text()
@@ -123,7 +140,7 @@ def check_product_page(url):
             except Exception:
                 pass
 
-        # 2. JSON-LD'den bulunamazsa güncel N11 HTML sınıf seçicileri
+        # 2. JSON-LD'den bulunamazsa HTML seçiciler
         if price == 0.0:
             selectors = [
                 '.newPrice ins', '.newPrice', '.price', '.campaignPrice', 
@@ -167,9 +184,37 @@ async def main():
         return
 
     with open("products.json", "r", encoding="utf-8") as f:
-        urls = json.load(f)
+        target_list = json.load(f)
 
-    for url in urls:
+    # Toplanacak tüm ürün URL'leri
+    product_urls = set()
+
+    for item in target_list:
+        # Eğer link bir arama veya kategori linkiyse sayfaları gezerek ürünleri topla
+        if "arama?q=" in item or "kategori" in item:
+            print(f"Arama sayfası taranıyor: {item}")
+            for sayfa in range(1, 4):  # İlk 3 sayfayı tara
+                p_url = f"{item}&pg={sayfa}" if "?" in item else f"{item}?pg={sayfa}"
+                try:
+                    res = SESSION.get(p_url, timeout=30)
+                    if res.status_code != 200:
+                        break
+                    soup = BeautifulSoup(res.text, 'html.parser')
+                    found_links = kartlari_bul(soup)
+                    if not found_links:
+                        break
+                    for fl in found_links:
+                        product_urls.add(fl)
+                except Exception as e:
+                    print(f"Sayfa tarama hatası: {e}")
+                    break
+        else:
+            # Doğrudan ürün linkiyse direkt ekle
+            product_urls.add(item)
+
+    print(f"Toplam {len(product_urls)} benzersiz ürün taranacak.")
+
+    for url in product_urls:
         title = url_to_title(url)
         data = check_product_page(url)
         current_price = data["price"]
