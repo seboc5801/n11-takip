@@ -14,7 +14,7 @@ CHAT_ID = os.environ.get("CHAT_ID", "BURAYA_CHAT_ID_YAZ")
 
 DB_NAME = "bot_data.db"
 
-# Arama sayfaları için oturum ve header yapısı
+# İstekler için genel tarayıcı oturumu
 SESSION = requests.Session()
 SESSION.headers.update({
     "User-Agent": (
@@ -26,7 +26,6 @@ SESSION.headers.update({
     "Referer": "https://www.n11.com/"
 })
 
-# Çalışan mağaza kodundaki kritik mobil header yapısı (detay sayfaları için)
 MOBILE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
     "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7"
@@ -99,60 +98,68 @@ def kartlari_bul(soup):
     return results
 
 def check_product_page(url):
-    # Çalışan mağaza kodundaki gibi mobil sayfaya çeviriyoruz
-    mobile_url = url.replace("www.n11.com", "m.n11.com")
     price = 0.0
     coupons = []
     
-    try:
-        response = requests.get(mobile_url, headers=MOBILE_HEADERS, timeout=30)
-        if response.status_code != 200:
-            return {"price": 0.0, "coupons": []}
+    # Denenecek URL alternatifleri (Önce mobil, olmazsa orijinal URL)
+    urls_to_test = [
+        url.replace("www.n11.com", "m.n11.com"),
+        url
+    ]
+    
+    for target_url in urls_to_test:
+        headers = MOBILE_HEADERS if "m.n11.com" in target_url else SESSION.headers
+        try:
+            response = requests.get(target_url, headers=headers, timeout=20)
+            if response.status_code != 200:
+                continue
+                
+            soup = BeautifulSoup(response.text, 'html.parser')
             
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # 1. JSON-LD üzerinden fiyat yakalama (Çalışan mağazadaki mantık)
-        for script in soup.find_all('script', type='application/ld+json'):
-            try:
-                script_text = script.string or script.get_text()
-                if not script_text:
-                    continue
-                data = json.loads(script_text)
-                stack = data if isinstance(data, list) else [data]
-                while stack:
-                    obj = stack.pop()
-                    if isinstance(obj, list):
-                        stack.extend(obj)
+            # 1. JSON-LD üzerinden fiyat yakalama
+            for script in soup.find_all('script', type='application/ld+json'):
+                try:
+                    script_text = script.string or script.get_text()
+                    if not script_text:
                         continue
-                    if not isinstance(obj, dict):
-                        continue
-                    if isinstance(obj.get("@graph"), list):
-                        stack.extend(obj["@graph"])
+                    data = json.loads(script_text)
+                    stack = data if isinstance(data, list) else [data]
+                    while stack:
+                        obj = stack.pop()
+                        if isinstance(obj, list):
+                            stack.extend(obj)
+                            continue
+                        if not isinstance(obj, dict):
+                            continue
+                        if isinstance(obj.get("@graph"), list):
+                            stack.extend(obj["@graph"])
 
-                    offers = obj.get('offers')
-                    if offers:
-                        if isinstance(offers, list) and len(offers) > 0:
-                            first_offer = offers[0]
-                            if first_offer.get('price'):
-                                val = float(first_offer.get('price'))
-                                if val > 0:
-                                    price = val
-                        elif isinstance(offers, dict):
-                            if offers.get('price'):
-                                val = float(offers.get('price'))
-                                if val > 0:
-                                    price = val
-                    if price > 0:
-                        break
-            except Exception:
-                pass
+                        offers = obj.get('offers')
+                        if offers:
+                            if isinstance(offers, list) and len(offers) > 0:
+                                first_offer = offers[0]
+                                if first_offer.get('price'):
+                                    val = float(first_offer.get('price'))
+                                    if val > 0:
+                                        price = val
+                            elif isinstance(offers, dict):
+                                if offers.get('price'):
+                                    val = float(offers.get('price'))
+                                    if val > 0:
+                                        price = val
+                        if price > 0:
+                            break
+                except Exception:
+                    pass
 
-        # 2. JSON-LD'den bulunamazsa HTML seçiciler
-        if price == 0.0:
+            if price > 0:
+                break
+
+            # 2. HTML Selector fallback
             selectors = [
                 '.newPrice ins', '.newPrice', '.price', '.campaignPrice', 
                 '[itemprop="price"]', '.productPrice', '.priceContainer',
-                'div.uniquenessPrice ins', 'div.priceContainer span'
+                'div.uniquenessPrice ins', 'div.priceContainer span', '.price-val'
             ]
             for selector in selectors:
                 els = soup.select(selector)
@@ -170,15 +177,18 @@ def check_product_page(url):
                             pass
                 if price > 0:
                     break
-                    
-    except Exception as e:
-        print(f"Hata: {e}")
+            
+            if price > 0:
+                break
+                
+        except Exception as e:
+            continue
         
     return {"price": price, "coupons": coupons}
 
 async def main():
     if BOT_TOKEN == "BURAYA_BOT_TOKEN_YAZ" or CHAT_ID == "BURAYA_CHAT_ID_YAZ":
-        print("Lütfen Bot Token ve Chat ID bilgilerini girin!")
+        print("Lütfen Bot Token dan Chat ID bilgilerini girin!")
         return
 
     request = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)
@@ -225,7 +235,7 @@ async def main():
         current_coupons = data["coupons"]
 
         if current_price == 0.0:
-            print(f"Fiyat çekilemedi: {title}")
+            print(f"Fiyat çekilemedi: {title} ({url})")
             continue
 
         old_data = get_product_data(url)
