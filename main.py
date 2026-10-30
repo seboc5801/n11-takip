@@ -14,7 +14,7 @@ CHAT_ID = os.environ.get("CHAT_ID", "BURAYA_CHAT_ID_YAZ")
 
 DB_NAME = "bot_data.db"
 
-# Sağlam SESSION ve Header yapısı
+# Arama sayfaları için oturum ve header yapısı
 SESSION = requests.Session()
 SESSION.headers.update({
     "User-Agent": (
@@ -25,6 +25,12 @@ SESSION.headers.update({
     "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
     "Referer": "https://www.n11.com/"
 })
+
+# Çalışan mağaza kodundaki kritik mobil header yapısı (detay sayfaları için)
+MOBILE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+    "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7"
+}
 
 def init_db():
     conn = sqlite3.connect(DB_NAME)
@@ -84,7 +90,6 @@ def kartlari_bul(soup):
         href = link.get("href", "")
         if not href.startswith("http"):
             href = "https://www.n11.com" + href
-        # URL temizleme
         p = urlsplit(href)
         clean_url = f"{p.scheme}://{p.netloc}{p.path.rstrip('/')}"
         if clean_url in seen:
@@ -94,17 +99,19 @@ def kartlari_bul(soup):
     return results
 
 def check_product_page(url):
+    # Çalışan mağaza kodundaki gibi mobil sayfaya çeviriyoruz
+    mobile_url = url.replace("www.n11.com", "m.n11.com")
     price = 0.0
     coupons = []
     
     try:
-        response = SESSION.get(url, timeout=30)
+        response = requests.get(mobile_url, headers=MOBILE_HEADERS, timeout=30)
         if response.status_code != 200:
             return {"price": 0.0, "coupons": []}
             
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # 1. JSON-LD üzerinden fiyat yakalama
+        # 1. JSON-LD üzerinden fiyat yakalama (Çalışan mağazadaki mantık)
         for script in soup.find_all('script', type='application/ld+json'):
             try:
                 script_text = script.string or script.get_text()
@@ -186,14 +193,12 @@ async def main():
     with open("products.json", "r", encoding="utf-8") as f:
         target_list = json.load(f)
 
-    # Toplanacak tüm ürün URL'leri
     product_urls = set()
 
     for item in target_list:
-        # Eğer link bir arama veya kategori linkiyse sayfaları gezerek ürünleri topla
         if "arama?q=" in item or "kategori" in item:
             print(f"Arama sayfası taranıyor: {item}")
-            for sayfa in range(1, 4):  # İlk 3 sayfayı tara
+            for sayfa in range(1, 4):
                 p_url = f"{item}&pg={sayfa}" if "?" in item else f"{item}?pg={sayfa}"
                 try:
                     res = SESSION.get(p_url, timeout=30)
@@ -209,7 +214,6 @@ async def main():
                     print(f"Sayfa tarama hatası: {e}")
                     break
         else:
-            # Doğrudan ürün linkiyse direkt ekle
             product_urls.add(item)
 
     print(f"Toplam {len(product_urls)} benzersiz ürün taranacak.")
