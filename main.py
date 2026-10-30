@@ -3,6 +3,7 @@ import json
 import sqlite3
 import asyncio
 import re
+from urllib.parse import urlsplit, unquote
 from telegram import Bot
 from telegram.request import HTTPXRequest
 import requests
@@ -55,10 +56,11 @@ def update_product_data(url, price, coupons):
 
 def url_to_title(url):
     try:
-        # URL'den ürün adını otomatik türetir (Örn: roborock-s9-akilli-robot -> Roborock S9 Akilli Robot)
-        part = url.split("/urun/")[1].split("?")[0]
-        name_slug = part.rsplit("-", 1)[0] # Sondaki ID'yi ayıklar
-        return name_slug.replace("-", " ").title()
+        path = unquote(urlsplit(url).path)
+        slug = path.rstrip("/").split("/")[-1]
+        slug = re.sub(r"-\d+$", "", slug)
+        title = re.sub(r"-+", " ", slug).strip().title()
+        return title if title else "N11 Ürünü"
     except:
         return "N11 Ürünü"
 
@@ -79,19 +81,38 @@ def check_product_page(url):
             
         soup = BeautifulSoup(response.text, 'html.parser')
         
+        # Sağlamlaştırılmış JSON-LD tarama yapısı
         for script in soup.find_all('script', type='application/ld+json'):
             try:
-                data = json.loads(script.string)
-                if data.get('offers') and data['offers'].get('price'):
-                    price = float(data['offers']['price'])
-                    break
-                elif data.get('@type') == 'Product' and data.get('offers'):
-                    offers = data['offers']
-                    if isinstance(offers, list) and offers[0].get('price'):
-                        price = float(offers[0].get('price'))
-                        break
-                    elif isinstance(offers, dict) and offers.get('price'):
-                        price = float(offers.get('price'))
+                script_text = script.string or script.get_text()
+                if not script_text:
+                    continue
+                data = json.loads(script_text)
+                stack = data if isinstance(data, list) else [data]
+                while stack:
+                    obj = stack.pop()
+                    if isinstance(obj, list):
+                        stack.extend(obj)
+                        continue
+                    if not isinstance(obj, dict):
+                        continue
+                    if isinstance(obj.get("@graph"), list):
+                        stack.extend(obj["@graph"])
+
+                    offers = obj.get('offers')
+                    if offers:
+                        if isinstance(offers, list) and len(offers) > 0:
+                            first_offer = offers[0]
+                            if first_offer.get('price'):
+                                val = float(first_offer.get('price'))
+                                if val > 0:
+                                    price = val
+                        elif isinstance(offers, dict):
+                            if offers.get('price'):
+                                val = float(offers.get('price'))
+                                if val > 0:
+                                    price = val
+                    if price > 0:
                         break
             except Exception:
                 pass
