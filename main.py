@@ -3,9 +3,10 @@ import json
 import sqlite3
 import asyncio
 import re
+import time
 from telegram import Bot
 from telegram.request import HTTPXRequest
-import requests
+import cloudscraper  # requests yerine cloudscraper kullanmak bot korumalarını aşmada hayat kurtarır
 from bs4 import BeautifulSoup
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "BURAYA_BOT_TOKEN_YAZ")
@@ -55,7 +56,7 @@ def update_product_data(url, price, coupons):
 
 def url_to_title(url):
     try:
-        # URL'den ürün adını otomatik türetir (Örn: roborock-s9-akilli-robot -> Roborock S9 Akilli Robot)
+        # URL'den ürün adını otomatik türetir
         part = url.split("/urun/")[1].split("?")[0]
         name_slug = part.rsplit("-", 1)[0] # Sondaki ID'yi ayıklar
         return name_slug.replace("-", " ").title()
@@ -63,22 +64,33 @@ def url_to_title(url):
         return "N11 Ürünü"
 
 def check_product_page(url):
-    mobile_url = url.replace("www.n11.com", "m.n11.com")
+    # Masaüstü veya mobil fark etmez, cloudscraper ile istek atıyoruz
     price = 0.0
     coupons = []
     
+    scraper = cloudscraper.create_scraper(
+        browser={
+            'browser': 'chrome',
+            'platform': 'ios',
+            'desktop': False
+        }
+    )
+    
     headers = {
         "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
-        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7"
+        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": "https://www.n11.com/"
     }
     
     try:
-        response = requests.get(mobile_url, headers=headers, timeout=30)
+        response = scraper.get(url, headers=headers, timeout=30)
         if response.status_code != 200:
+            print(f"HTTP Durum Kodu: {response.status_code} - URL: {url}")
             return {"price": 0.0, "coupons": []}
             
         soup = BeautifulSoup(response.text, 'html.parser')
         
+        # 1. JSON-LD Kontrolü
         for script in soup.find_all('script', type='application/ld+json'):
             try:
                 data = json.loads(script.string)
@@ -96,8 +108,12 @@ def check_product_page(url):
             except Exception:
                 pass
 
+        # 2. HTML Seçici Kontrolü (Eğer JSON'dan fiyat alınamadıysa)
         if price == 0.0:
-            selectors = ['.newPrice', '.price', '.campaignPrice', '[itemprop="price"]', '.productPrice']
+            selectors = [
+                '.newPrice ins', '.newPrice', '.price', '.campaignPrice', 
+                '[itemprop="price"]', '.productPrice', '.unf-p-price', '.priceContainer'
+            ]
             for selector in selectors:
                 el = soup.select_one(selector)
                 if el:
@@ -113,7 +129,7 @@ def check_product_page(url):
                         except:
                             pass
     except Exception as e:
-        print(f"Hata: {e}")
+        print(f"Hata oluştu ({url}): {e}")
         
     return {"price": price, "coupons": coupons}
 
@@ -128,10 +144,13 @@ async def main():
     init_db()
 
     if not os.path.exists("products.json"):
+        print("products.json dosyası bulunamadı!")
         return
 
     with open("products.json", "r", encoding="utf-8") as f:
         urls = json.load(f)
+
+    print(f"Toplam {len(urls)} ürün kontrol ediliyor...")
 
     for url in urls:
         title = url_to_title(url)
@@ -141,6 +160,7 @@ async def main():
 
         if current_price == 0.0:
             print(f"Fiyat çekilemedi: {title}")
+            time.sleep(1) # İstekler arası bekleme
             continue
 
         old_data = get_product_data(url)
@@ -163,6 +183,7 @@ async def main():
             await bot.send_message(chat_id=CHAT_ID, text=full_message, parse_mode="Markdown")
             
         update_product_data(url, current_price, current_coupons)
+        time.sleep(2) # Bot korumasına takılmamak için her istek arasında 2 saniye bekleyin
 
 if __name__ == "__main__":
     asyncio.run(main())
