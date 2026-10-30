@@ -6,7 +6,7 @@ import re
 import time
 from telegram import Bot
 from telegram.request import HTTPXRequest
-import cloudscraper  # requests yerine cloudscraper kullanmak bot korumalarını aşmada hayat kurtarır
+import requests
 from bs4 import BeautifulSoup
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "BURAYA_BOT_TOKEN_YAZ")
@@ -56,34 +56,33 @@ def update_product_data(url, price, coupons):
 
 def url_to_title(url):
     try:
-        # URL'den ürün adını otomatik türetir
         part = url.split("/urun/")[1].split("?")[0]
-        name_slug = part.rsplit("-", 1)[0] # Sondaki ID'yi ayıklar
+        name_slug = part.rsplit("-", 1)[0]
         return name_slug.replace("-", " ").title()
     except:
         return "N11 Ürünü"
 
 def check_product_page(url):
-    # Masaüstü veya mobil fark etmez, cloudscraper ile istek atıyoruz
     price = 0.0
     coupons = []
     
-    scraper = cloudscraper.create_scraper(
-        browser={
-            'browser': 'chrome',
-            'platform': 'ios',
-            'desktop': False
-        }
-    )
-    
+    # Cloudscraper yerine gerçekçi tarayıcı başlıkları kullanan requests yapılandırması
     headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
         "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Referer": "https://www.n11.com/"
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Cache-Control": "max-age=0"
     }
     
     try:
-        response = scraper.get(url, headers=headers, timeout=30)
+        response = requests.get(url, headers=headers, timeout=30)
         if response.status_code != 200:
             print(f"HTTP Durum Kodu: {response.status_code} - URL: {url}")
             return {"price": 0.0, "coupons": []}
@@ -108,7 +107,7 @@ def check_product_page(url):
             except Exception:
                 pass
 
-        # 2. HTML Seçici Kontrolü (Eğer JSON'dan fiyat alınamadıysa)
+        # 2. HTML Seçici Kontrolü
         if price == 0.0:
             selectors = [
                 '.newPrice ins', '.newPrice', '.price', '.campaignPrice', 
@@ -160,7 +159,7 @@ async def main():
 
         if current_price == 0.0:
             print(f"Fiyat çekilemedi: {title}")
-            time.sleep(1) # İstekler arası bekleme
+            time.sleep(1)
             continue
 
         old_data = get_product_data(url)
@@ -183,7 +182,7 @@ async def main():
             await bot.send_message(chat_id=CHAT_ID, text=full_message, parse_mode="Markdown")
             
         update_product_data(url, current_price, current_coupons)
-        time.sleep(2) # Bot korumasına takılmamak için her istek arasında 2 saniye bekleyin
+        time.sleep(2)
 
 if __name__ == "__main__":
     asyncio.run(main())
