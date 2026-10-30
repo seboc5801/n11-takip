@@ -55,65 +55,84 @@ def update_product_data(url, price, coupons):
 
 def url_to_title(url):
     try:
-        # URL'den ürün adını otomatik türetir (Örn: roborock-s9-akilli-robot -> Roborock S9 Akilli Robot)
         part = url.split("/urun/")[1].split("?")[0]
-        name_slug = part.rsplit("-", 1)[0] # Sondaki ID'yi ayıklar
+        name_slug = part.rsplit("-", 1)[0]
         return name_slug.replace("-", " ").title()
     except:
         return "N11 Ürünü"
 
 def check_product_page(url):
-    mobile_url = url.replace("www.n11.com", "m.n11.com")
+    # Masaüstü veya mobil site bazen değişebilir, masaüstü user-agent ile ana sayfayı denemek daha kararlıdır
     price = 0.0
     coupons = []
     
     headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
-        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apgx,*/*;q=0.8"
     }
     
     try:
-        response = requests.get(mobile_url, headers=headers, timeout=30)
+        response = requests.get(url, headers=headers, timeout=30)
         if response.status_code != 200:
             return {"price": 0.0, "coupons": []}
             
         soup = BeautifulSoup(response.text, 'html.parser')
         
+        # 1. JSON-LD Schema Kontrolü
         for script in soup.find_all('script', type='application/ld+json'):
             try:
                 data = json.loads(script.string)
-                if data.get('offers') and data['offers'].get('price'):
-                    price = float(data['offers']['price'])
+                if isinstance(data, list):
+                    items = data
+                else:
+                    items = [data]
+                
+                for item in items:
+                    if item.get('@type') == 'Product' and item.get('offers'):
+                        offers = item['offers']
+                        if isinstance(offers, list) and len(offers) > 0 and offers[0].get('price'):
+                            price = float(str(offers[0].get('price')).replace(',', '.'))
+                            break
+                        elif isinstance(offers, dict) and offers.get('price'):
+                            price = float(str(offers.get('price')).replace(',', '.'))
+                            break
+                if price > 0:
                     break
-                elif data.get('@type') == 'Product' and data.get('offers'):
-                    offers = data['offers']
-                    if isinstance(offers, list) and offers[0].get('price'):
-                        price = float(offers[0].get('price'))
-                        break
-                    elif isinstance(offers, dict) and offers.get('price'):
-                        price = float(offers.get('price'))
-                        break
             except Exception:
                 pass
 
+        # 2. HTML Sınıf Seçicileri Kontrolü
         if price == 0.0:
-            selectors = ['.newPrice', '.price', '.campaignPrice', '[itemprop="price"]', '.productPrice']
+            selectors = ['.newPrice ins', '.price ins', '.campaignPrice', '[itemprop="price"]', '.productPrice', '.unPrice', 'ins.price']
             for selector in selectors:
                 el = soup.select_one(selector)
                 if el:
                     txt = el.get_text().strip()
                     clean = txt.replace("TL", "").replace("₺", "").replace(".", "").replace(",", ".").strip()
-                    numbers = re.findall(r'\d+[\d\.,]*', clean)
+                    numbers = re.findall(r'\d+[\d\.]*', clean)
                     if numbers:
                         try:
-                            val = float(numbers[0].replace(".", "").replace(",", "."))
+                            val = float(numbers[0])
                             if val > 10:
                                 price = val
                                 break
                         except:
                             pass
+                            
+        # 3. Hala bulunamadıysa sayfa içindeki fiyat pattern'lerini ara
+        if price == 0.0:
+            matches = re.findall(r'"price"\s*:\s*"([0-9\.]+)"', response.text)
+            if matches:
+                try:
+                    val = float(matches[0])
+                    if val > 10:
+                        price = val
+                except:
+                    pass
+
     except Exception as e:
-        print(f"Hata: {e}")
+        print(f"Hata ({url}): {e}")
         
     return {"price": price, "coupons": coupons}
 
@@ -128,6 +147,7 @@ async def main():
     init_db()
 
     if not os.path.exists("products.json"):
+        print("products.json dosyası bulunamadı!")
         return
 
     with open("products.json", "r", encoding="utf-8") as f:
@@ -149,13 +169,18 @@ async def main():
 
         if old_data is None:
             should_notify = True
-            message_lines.append(f"💰 Güncel Fiyat: {current_price} TL")
+            message_lines.append(f"💰 Güncel Fiyat: {current_price:,.2f} TL")
         else:
-            if current_price < old_data["last_price"]:
-                should_notify = True
-                message_lines.append(f"🔥 **FİYAT DÜŞTÜ!**")
-                message_lines.append(f"📉 Eski Fiyat: {old_data['last_price']} TL")
-                message_lines.append(f"💰 Yeni Fiyat: {current_price} TL")
+            old_price = old_data["last_price"]
+            if current_price < old_price:
+                # %1 ve üzeri düşüşleri filtreleme kontrolü
+                drop_oran = (old_price - current_price) / old_price
+                if drop_oran >= 0.01:
+                    should_notify = True
+                    message_lines.append(f"🔥 **FİYAT DÜŞTÜ!**")
+                    message_lines.append(f"📉 Eski Fiyat: {old_price:,.2f} TL")
+                    message_lines.append(f"💰 Yeni Fiyat: {current_price:,.2f} TL")
+                    message_lines.append(f"📉 Düşüş Oranı: %{drop_oran*100:.1f}")
 
         if should_notify:
             message_lines.append(f"\n🔗 [Ürüne Git]({url})")
@@ -163,6 +188,8 @@ async def main():
             await bot.send_message(chat_id=CHAT_ID, text=full_message, parse_mode="Markdown")
             
         update_product_data(url, current_price, current_coupons)
+        # İstekler arası bot korumasına takılmamak için kısa bir bekleme
+        await asyncio.sleep(2)
 
 if __name__ == "__main__":
     asyncio.run(main())
