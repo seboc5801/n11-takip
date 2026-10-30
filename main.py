@@ -14,7 +14,7 @@ CHAT_ID = os.environ.get("CHAT_ID", "BURAYA_CHAT_ID_YAZ")
 
 DB_NAME = "bot_data.db"
 
-# Çalışan mağaza kodundaki gibi oturum ve header yapısı eklendi
+# Çalışan mağaza kodundaki sağlam SESSION ve Header yapısı
 SESSION = requests.Session()
 SESSION.headers.update({
     "User-Agent": (
@@ -80,58 +80,56 @@ def check_product_page(url):
     price = 0.0
     coupons = []
     
-    # Hem normal siteyi hem mobil siteyi session ile deneyelim
-    urls_to_try = [url, url.replace("www.n11.com", "m.n11.com")]
-    
-    for target_url in urls_to_try:
-        try:
-            response = SESSION.get(target_url, timeout=30)
-            if response.status_code != 200:
-                continue
-                
-            soup = BeautifulSoup(response.text, 'html.parser')
+    try:
+        response = SESSION.get(url, timeout=30)
+        if response.status_code != 200:
+            return {"price": 0.0, "coupons": []}
             
-            # 1. JSON-LD tarama yapısı
-            for script in soup.find_all('script', type='application/ld+json'):
-                try:
-                    script_text = script.string or script.get_text()
-                    if not script_text:
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # 1. JSON-LD üzerinden fiyat yakalama (Çalışan mağaza kodundaki mantık)
+        for script in soup.find_all('script', type='application/ld+json'):
+            try:
+                script_text = script.string or script.get_text()
+                if not script_text:
+                    continue
+                data = json.loads(script_text)
+                stack = data if isinstance(data, list) else [data]
+                while stack:
+                    obj = stack.pop()
+                    if isinstance(obj, list):
+                        stack.extend(obj)
                         continue
-                    data = json.loads(script_text)
-                    stack = data if isinstance(data, list) else [data]
-                    while stack:
-                        obj = stack.pop()
-                        if isinstance(obj, list):
-                            stack.extend(obj)
-                            continue
-                        if not isinstance(obj, dict):
-                            continue
-                        if isinstance(obj.get("@graph"), list):
-                            stack.extend(obj["@graph"])
+                    if not isinstance(obj, dict):
+                        continue
+                    if isinstance(obj.get("@graph"), list):
+                        stack.extend(obj["@graph"])
 
-                        offers = obj.get('offers')
-                        if offers:
-                            if isinstance(offers, list) and len(offers) > 0:
-                                first_offer = offers[0]
-                                if first_offer.get('price'):
-                                    val = float(first_offer.get('price'))
-                                    if val > 0:
-                                        price = val
-                            elif isinstance(offers, dict):
-                                if offers.get('price'):
-                                    val = float(offers.get('price'))
-                                    if val > 0:
-                                        price = val
-                        if price > 0:
-                            break
-                except Exception:
-                    pass
-            
-            if price > 0:
-                break
+                    offers = obj.get('offers')
+                    if offers:
+                        if isinstance(offers, list) and len(offers) > 0:
+                            first_offer = offers[0]
+                            if first_offer.get('price'):
+                                val = float(first_offer.get('price'))
+                                if val > 0:
+                                    price = val
+                        elif isinstance(offers, dict):
+                            if offers.get('price'):
+                                val = float(offers.get('price'))
+                                if val > 0:
+                                    price = val
+                    if price > 0:
+                        break
+            except Exception:
+                pass
 
-            # 2. HTML Selector fallback
-            selectors = ['.newPrice', '.price', '.campaignPrice', '[itemprop="price"]', '.productPrice', '.priceContainer']
+        # 2. JSON-LD'den bulunamazsa güncel N11 HTML sınıf seçicileri
+        if price == 0.0:
+            selectors = [
+                '.newPrice ins', '.newPrice', '.price', '.campaignPrice', 
+                '[itemprop="price"]', '.productPrice', '.priceContainer',
+                'div.uniquenessPrice ins', 'div.priceContainer span'
+            ]
             for selector in selectors:
                 els = soup.select(selector)
                 for el in els:
@@ -149,11 +147,8 @@ def check_product_page(url):
                 if price > 0:
                     break
                     
-            if price > 0:
-                break
-                
-        except Exception as e:
-            continue
+    except Exception as e:
+        print(f"Hata: {e}")
         
     return {"price": price, "coupons": coupons}
 
@@ -168,7 +163,7 @@ async def main():
     init_db()
 
     if not os.path.exists("products.json"):
-        print("products.json bulunamadı!")
+        print("products.json dosyası bulunamadı!")
         return
 
     with open("products.json", "r", encoding="utf-8") as f:
