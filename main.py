@@ -14,6 +14,18 @@ CHAT_ID = os.environ.get("CHAT_ID", "BURAYA_CHAT_ID_YAZ")
 
 DB_NAME = "bot_data.db"
 
+# Çalışan mağaza kodundaki gibi oturum ve header yapısı eklendi
+SESSION = requests.Session()
+SESSION.headers.update({
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/128.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Referer": "https://www.n11.com/"
+})
+
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -65,63 +77,64 @@ def url_to_title(url):
         return "N11 Ürünü"
 
 def check_product_page(url):
-    mobile_url = url.replace("www.n11.com", "m.n11.com")
     price = 0.0
     coupons = []
     
-    headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
-        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7"
-    }
+    # Hem normal siteyi hem mobil siteyi session ile deneyelim
+    urls_to_try = [url, url.replace("www.n11.com", "m.n11.com")]
     
-    try:
-        response = requests.get(mobile_url, headers=headers, timeout=30)
-        if response.status_code != 200:
-            return {"price": 0.0, "coupons": []}
+    for target_url in urls_to_try:
+        try:
+            response = SESSION.get(target_url, timeout=30)
+            if response.status_code != 200:
+                continue
+                
+            soup = BeautifulSoup(response.text, 'html.parser')
             
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Sağlamlaştırılmış JSON-LD tarama yapısı
-        for script in soup.find_all('script', type='application/ld+json'):
-            try:
-                script_text = script.string or script.get_text()
-                if not script_text:
-                    continue
-                data = json.loads(script_text)
-                stack = data if isinstance(data, list) else [data]
-                while stack:
-                    obj = stack.pop()
-                    if isinstance(obj, list):
-                        stack.extend(obj)
+            # 1. JSON-LD tarama yapısı
+            for script in soup.find_all('script', type='application/ld+json'):
+                try:
+                    script_text = script.string or script.get_text()
+                    if not script_text:
                         continue
-                    if not isinstance(obj, dict):
-                        continue
-                    if isinstance(obj.get("@graph"), list):
-                        stack.extend(obj["@graph"])
+                    data = json.loads(script_text)
+                    stack = data if isinstance(data, list) else [data]
+                    while stack:
+                        obj = stack.pop()
+                        if isinstance(obj, list):
+                            stack.extend(obj)
+                            continue
+                        if not isinstance(obj, dict):
+                            continue
+                        if isinstance(obj.get("@graph"), list):
+                            stack.extend(obj["@graph"])
 
-                    offers = obj.get('offers')
-                    if offers:
-                        if isinstance(offers, list) and len(offers) > 0:
-                            first_offer = offers[0]
-                            if first_offer.get('price'):
-                                val = float(first_offer.get('price'))
-                                if val > 0:
-                                    price = val
-                        elif isinstance(offers, dict):
-                            if offers.get('price'):
-                                val = float(offers.get('price'))
-                                if val > 0:
-                                    price = val
-                    if price > 0:
-                        break
-            except Exception:
-                pass
+                        offers = obj.get('offers')
+                        if offers:
+                            if isinstance(offers, list) and len(offers) > 0:
+                                first_offer = offers[0]
+                                if first_offer.get('price'):
+                                    val = float(first_offer.get('price'))
+                                    if val > 0:
+                                        price = val
+                            elif isinstance(offers, dict):
+                                if offers.get('price'):
+                                    val = float(offers.get('price'))
+                                    if val > 0:
+                                        price = val
+                        if price > 0:
+                            break
+                except Exception:
+                    pass
+            
+            if price > 0:
+                break
 
-        if price == 0.0:
-            selectors = ['.newPrice', '.price', '.campaignPrice', '[itemprop="price"]', '.productPrice']
+            # 2. HTML Selector fallback
+            selectors = ['.newPrice', '.price', '.campaignPrice', '[itemprop="price"]', '.productPrice', '.priceContainer']
             for selector in selectors:
-                el = soup.select_one(selector)
-                if el:
+                els = soup.select(selector)
+                for el in els:
                     txt = el.get_text().strip()
                     clean = txt.replace("TL", "").replace("₺", "").replace(".", "").replace(",", ".").strip()
                     numbers = re.findall(r'\d+[\d\.,]*', clean)
@@ -133,8 +146,14 @@ def check_product_page(url):
                                 break
                         except:
                             pass
-    except Exception as e:
-        print(f"Hata: {e}")
+                if price > 0:
+                    break
+                    
+            if price > 0:
+                break
+                
+        except Exception as e:
+            continue
         
     return {"price": price, "coupons": coupons}
 
@@ -149,6 +168,7 @@ async def main():
     init_db()
 
     if not os.path.exists("products.json"):
+        print("products.json bulunamadı!")
         return
 
     with open("products.json", "r", encoding="utf-8") as f:
