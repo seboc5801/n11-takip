@@ -3,6 +3,7 @@ import json
 import sqlite3
 import asyncio
 import re
+import logging
 from urllib.parse import urlsplit, unquote
 from telegram import Bot
 from telegram.request import HTTPXRequest
@@ -14,7 +15,12 @@ CHAT_ID = os.environ.get("CHAT_ID", "BURAYA_CHAT_ID_YAZ")
 
 DB_NAME = "bot_data.db"
 
-# İstekler için genel tarayıcı oturumu
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s: %(message)s"
+)
+
+# İstekler için güncel ve güvenilir tarayıcı oturumu
 SESSION = requests.Session()
 SESSION.headers.update({
     "User-Agent": (
@@ -22,13 +28,17 @@ SESSION.headers.update({
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/128.0.0.0 Safari/537.36"
     ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
     "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Referer": "https://www.n11.com/"
+    "Referer": "https://www.n11.com/",
+    "Connection": "keep-alive"
 })
 
 MOBILE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
-    "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7"
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Referer": "https://m.n11.com/"
 }
 
 def init_db():
@@ -101,22 +111,25 @@ def check_product_page(url):
     price = 0.0
     coupons = []
     
-    # Denenecek URL alternatifleri (Önce mobil, olmazsa orijinal URL)
+    # Öncelikli olarak masaüstü, alternatif olarak mobil URL deneniyor (Bot korumasını atlatmak için)
     urls_to_test = [
-        url.replace("www.n11.com", "m.n11.com"),
-        url
+        url,
+        url.replace("www.n11.com", "m.n11.com")
     ]
     
     for target_url in urls_to_test:
-        headers = MOBILE_HEADERS if "m.n11.com" in target_url else SESSION.headers
+        is_mobile = "m.n11.com" in target_url
+        headers = MOBILE_HEADERS if is_mobile else SESSION.headers
+        client = SESSION if not is_mobile else requests
+        
         try:
-            response = requests.get(target_url, headers=headers, timeout=20)
+            response = client.get(target_url, headers=headers, timeout=25)
             if response.status_code != 200:
                 continue
                 
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # 1. JSON-LD üzerinden fiyat yakalama
+            # 1. JSON-LD üzerinden fiyat yakalama (En güvenilir yöntem)
             for script in soup.find_all('script', type='application/ld+json'):
                 try:
                     script_text = script.string or script.get_text()
@@ -155,11 +168,12 @@ def check_product_page(url):
             if price > 0:
                 break
 
-            # 2. HTML Selector fallback
+            # 2. HTML Selector fallback (Alternatif HTML etiketleri)
             selectors = [
                 '.newPrice ins', '.newPrice', '.price', '.campaignPrice', 
                 '[itemprop="price"]', '.productPrice', '.priceContainer',
-                'div.uniquenessPrice ins', 'div.priceContainer span', '.price-val'
+                'div.uniquenessPrice ins', 'div.priceContainer span', '.price-val',
+                '.price-box', '[class*="price"]'
             ]
             for selector in selectors:
                 els = soup.select(selector)
@@ -188,7 +202,7 @@ def check_product_page(url):
 
 async def main():
     if BOT_TOKEN == "BURAYA_BOT_TOKEN_YAZ" or CHAT_ID == "BURAYA_CHAT_ID_YAZ":
-        print("Lütfen Bot Token dan Chat ID bilgilerini girin!")
+        print("Lütfen Bot Token ve Chat ID bilgilerini girin!")
         return
 
     request = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)
@@ -206,7 +220,7 @@ async def main():
     product_urls = set()
 
     for item in target_list:
-        if "arama?q=" in item or "kategori" in item:
+        if "arama?q=" in item or "kategori" in item or "arama" in item:
             print(f"Arama sayfası taranıyor: {item}")
             for sayfa in range(1, 4):
                 p_url = f"{item}&pg={sayfa}" if "?" in item else f"{item}?pg={sayfa}"
@@ -220,6 +234,7 @@ async def main():
                         break
                     for fl in found_links:
                         product_urls.add(fl)
+                    time.sleep(1)
                 except Exception as e:
                     print(f"Sayfa tarama hatası: {e}")
                     break
@@ -258,6 +273,7 @@ async def main():
             await bot.send_message(chat_id=CHAT_ID, text=full_message, parse_mode="Markdown")
             
         update_product_data(url, current_price, current_coupons)
+        time.sleep(0.5)
 
 if __name__ == "__main__":
     asyncio.run(main())
