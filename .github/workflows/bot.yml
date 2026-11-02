@@ -1,4 +1,3 @@
-```yaml
 name: N11 Fiyat Takip
 
 on:
@@ -24,6 +23,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # --- VERİTABANI ÖNBELLEKLEME ---
       - name: Veritabanını Önbellekten Geri Yükle
         uses: actions/cache@v4
         with:
@@ -31,21 +31,10 @@ jobs:
           key: n11-db-cache-${{ github.run_id }}
           restore-keys: |
             n11-db-cache-
+      # -------------------------------
 
       - name: Botu Çalıştır
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python main.py
-
-      - name: Sonuç Dosyalarını Yükle
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: n11-tarama-sonuclari
-          path: |
-            bulunan_urunler.json
-            n11_kart_teshisi.txt
-          if-no-files-found: warn
-          retention-days: 7
-```
